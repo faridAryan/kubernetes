@@ -1,0 +1,133 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-kube-950 text-gray-100 antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-kube-900;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-kube-700 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-kube-600;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-kube-900/60 backdrop-blur-xl border border-kube-700/50 rounded-2xl;
+  }
+
+  .glass-card-hover {
+    @apply glass-card hover:border-kube-500/50 hover:bg-kube-800/60 transition-all duration-300;
+  }
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-kube-400 via-accent-cyan to-accent-purple bg-clip-text text-transparent;
+  }
+
+  .gradient-border {
+    @apply relative before:absolute before:inset-0 before:rounded-2xl before:p-[1px] before:bg-gradient-to-r before:from-kube-500 before:via-accent-cyan before:to-accent-purple before:-z-10;
+  }
+
+  .btn-primary {
+    @apply px-6 py-3 bg-gradient-to-r from-kube-500 to-kube-600 text-white font-semibold rounded-xl hover:from-kube-400 hover:to-kube-500 transition-all duration-300 shadow-lg shadow-kube-500/25 hover:shadow-kube-400/40 active:scale-95;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 bg-kube-800 text-kube-300 font-semibold rounded-xl border border-kube-600 hover:bg-kube-700 hover:text-white transition-all duration-300 active:scale-95;
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 text-kube-400 hover:text-white hover:bg-kube-800/50 rounded-lg transition-all duration-200;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 bg-kube-900/80 border border-kube-700 rounded-xl text-white placeholder-kube-400 focus:outline-none focus:border-kube-500 focus:ring-2 focus:ring-kube-500/20 transition-all duration-200;
+  }
+
+  .xp-bar {
+    @apply h-2 rounded-full bg-kube-800 overflow-hidden;
+  }
+
+  .xp-bar-fill {
+    @apply h-full rounded-full bg-gradient-to-r from-kube-500 to-accent-cyan transition-all duration-1000 ease-out;
+  }
+
+  .badge-glow {
+    @apply ring-2 ring-accent-yellow/50 shadow-lg shadow-accent-yellow/20;
+  }
+
+  .lesson-type-reading {
+    @apply bg-kube-500/20 text-kube-300 border-kube-500/30;
+  }
+
+  .lesson-type-quiz {
+    @apply bg-accent-purple/20 text-accent-purple border-accent-purple/30;
+  }
+
+  .lesson-type-lab {
+    @apply bg-accent-green/20 text-accent-green border-accent-green/30;
+  }
+
+  .terminal-container {
+    @apply bg-black rounded-xl border border-kube-700 overflow-hidden font-mono;
+  }
+
+  .markdown-content h1 {
+    @apply text-3xl font-bold text-white mt-8 mb-4;
+  }
+  .markdown-content h2 {
+    @apply text-2xl font-bold text-white mt-6 mb-3;
+  }
+  .markdown-content h3 {
+    @apply text-xl font-semibold text-kube-200 mt-5 mb-2;
+  }
+  .markdown-content p {
+    @apply text-gray-300 leading-relaxed mb-4;
+  }
+  .markdown-content code {
+    @apply bg-kube-800 text-accent-cyan px-2 py-0.5 rounded text-sm font-mono;
+  }
+  .markdown-content pre {
+    @apply bg-kube-900 border border-kube-700 rounded-xl p-4 mb-4 overflow-x-auto;
+  }
+  .markdown-content pre code {
+    @apply bg-transparent px-0 py-0;
+  }
+  .markdown-content ul {
+    @apply list-disc list-inside text-gray-300 mb-4 space-y-1;
+  }
+  .markdown-content ol {
+    @apply list-decimal list-inside text-gray-300 mb-4 space-y-1;
+  }
+  .markdown-content blockquote {
+    @apply border-l-4 border-kube-500 pl-4 italic text-kube-300 my-4;
+  }
+  .markdown-content strong {
+    @apply text-white font-semibold;
+  }
+  .markdown-content a {
+    @apply text-kube-400 hover:text-kube-300 underline;
+  }
+  .markdown-content table {
+    @apply w-full border-collapse mb-4;
+  }
+  .markdown-content th {
+    @apply bg-kube-800 text-white font-semibold px-4 py-2 text-left border border-kube-700;
+  }
+  .markdown-content td {
+    @apply px-4 py-2 border border-kube-700 text-gray-300;
+  }
+}
