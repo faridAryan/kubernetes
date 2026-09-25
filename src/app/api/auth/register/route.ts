@@ -1,48 +1,31 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { jsonError, parseBody } from "@/lib/http";
+import { getClientIp, isRateLimited } from "@/lib/rate-limit";
+import { registerSchema } from "@/lib/validation/auth";
 
 export async function POST(request: Request) {
-  const { name, email, password } = await request.json();
-
-  if (!email || !password || !name) {
-    return NextResponse.json(
-      { error: "Missing required fields" },
-      { status: 400 }
-    );
+  const ip = getClientIp((name) => request.headers.get(name));
+  if (await isRateLimited(`register:${ip}`, 5, 3600)) {
+    return jsonError("Too many sign-ups from this address. Try again later.", 429);
   }
 
-  if (password.length < 6) {
-    return NextResponse.json(
-      { error: "Password must be at least 6 characters" },
-      { status: 400 }
-    );
+  const parsed = await parseBody(request, registerSchema);
+  if (parsed.error) return parsed.error;
+
+  const { name, email, password } = parsed.data;
+
+  try {
+    const user = await prisma.user.create({
+      data: { name, email, password: await bcrypt.hash(password, 12) },
+      select: { id: true, name: true, email: true },
+    });
+    return NextResponse.json(user, { status: 201 });
+  } catch (error) {
+    const isDuplicate = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+    if (isDuplicate) return jsonError("Email already registered", 400);
+    throw error;
   }
-
-  const existingUser = await prisma.user.findUnique({
-    where: { email },
-  });
-
-  if (existingUser) {
-    return NextResponse.json(
-      { error: "Email already registered" },
-      { status: 400 }
-    );
-  }
-
-  const hashedPassword = await bcrypt.hash(password, 12);
-
-  const user = await prisma.user.create({
-    data: {
-      name,
-      email,
-      password: hashedPassword,
-    },
-  });
-
-  return NextResponse.json({
-    id: user.id,
-    name: user.name,
-    email: user.email,
-  });
 }

@@ -1,58 +1,37 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { AchievementType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { awardXp } from "@/lib/gamification";
+import { getUserId, jsonError } from "@/lib/http";
+import { awardXp } from "@/lib/gamification/xp";
+
+const ENROLL_XP = 25;
 
 export async function POST(
   request: Request,
   { params }: { params: { slug: string } }
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const userId = await getUserId();
+  if (userId === null) return jsonError("Unauthorized", 401);
 
   const certification = await prisma.certificationPath.findUnique({
     where: { slug: params.slug },
+    select: { id: true, name: true },
   });
+  if (certification === null) return jsonError("Certification not found", 404);
 
-  if (!certification) {
-    return NextResponse.json(
-      { error: "Certification not found" },
-      { status: 404 }
-    );
+  try {
+    const enrollment = await prisma.$transaction(async (tx) => {
+      // The unique (userId, certificationId) constraint rejects duplicates
+      const created = await tx.enrollment.create({
+        data: { userId, certificationId: certification.id },
+      });
+      await awardXp(tx, userId, ENROLL_XP, AchievementType.enrollment, `Enrolled in ${certification.name}`);
+      return created;
+    });
+    return NextResponse.json(enrollment, { status: 201 });
+  } catch (error) {
+    const isDuplicate = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+    if (isDuplicate) return jsonError("Already enrolled", 400);
+    throw error;
   }
-
-  const existing = await prisma.enrollment.findUnique({
-    where: {
-      userId_certificationId: {
-        userId: session.user.id,
-        certificationId: certification.id,
-      },
-    },
-  });
-
-  if (existing) {
-    return NextResponse.json(
-      { error: "Already enrolled" },
-      { status: 400 }
-    );
-  }
-
-  const enrollment = await prisma.enrollment.create({
-    data: {
-      userId: session.user.id,
-      certificationId: certification.id,
-    },
-  });
-
-  await awardXp(
-    session.user.id,
-    25,
-    "enrollment",
-    `Enrolled in ${certification.name}`
-  );
-
-  return NextResponse.json(enrollment);
 }

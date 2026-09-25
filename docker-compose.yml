@@ -1,0 +1,23 @@
+# Local development database: run "docker compose up -d"
+services:
+  # PostgreSQL matching the RDS major version used in AWS
+  postgres:
+    # Official Postgres 16 image
+    image: postgres:16-alpine
+    # Restart automatically after reboots of Docker Desktop
+    restart: unless-stopped
+    # Credentials and database name used by .env.example
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kubelearn
+    # Expose Postgres on localhost:5432
+    ports:
+      - "5432:5432"
+    # Keep data between restarts in a named volume
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+# Named volume declared for the database files
+volumes:
+  pgdata:

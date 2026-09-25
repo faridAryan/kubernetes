@@ -1,185 +1,56 @@
-"use client";
-
-import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react";
-import { useParams, useRouter } from "next/navigation";
+import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  ChevronLeft,
-  ChevronRight,
-  CheckCircle2,
-  BookOpen,
-  Brain,
-  Terminal,
-  Zap,
-  Clock,
-} from "lucide-react";
-import QuizView from "@/components/quiz/QuizView";
+import { notFound, redirect } from "next/navigation";
+import { BookOpen, Brain, CheckCircle2, ChevronLeft, ChevronRight, Clock, Lock, Terminal, Zap } from "lucide-react";
 import LabView from "@/components/lab/LabView";
-import MarkdownRenderer from "@/components/lesson/MarkdownRenderer";
+import CompleteLessonButton from "@/components/lesson/CompleteLessonButton";
+import Markdown from "@/components/lesson/Markdown";
+import QuizView from "@/components/quiz/QuizView";
+import { getUserId } from "@/lib/http";
+import { getLessonPage } from "@/lib/queries/lesson";
 import { formatDuration } from "@/lib/utils";
 
-interface QuizQuestion {
-  id: string;
-  question: string;
-  type: string;
-  options: string;
-  explanation: string;
-  order: number;
-  xpReward: number;
+interface Props {
+  params: { certSlug: string; moduleSlug: string; lessonSlug: string };
 }
 
-interface LabConfig {
-  id: string;
-  instructions: string;
-  hints: string;
-  timeLimit: number;
-}
+export const metadata: Metadata = { title: "Lesson - KubeLearn" };
 
-interface LessonDetail {
-  id: string;
-  slug: string;
-  title: string;
-  content: string;
-  type: string;
-  order: number;
-  xpReward: number;
-  duration: number;
-  quizQuestions: QuizQuestion[];
-  labConfig: LabConfig | null;
-  progress?: { status: string }[];
-  module: {
-    id: string;
-    slug: string;
-    name: string;
-    certification: { slug: string; shortName: string };
-    lessons: {
-      id: string;
-      title: string;
-      type: string;
-      order: number;
-      slug: string;
-    }[];
-  };
-}
+const TYPE_ICONS = {
+  reading: <BookOpen size={20} className="text-kube-400" />,
+  quiz: <Brain size={20} className="text-accent-purple" />,
+  lab: <Terminal size={20} className="text-accent-green" />,
+};
 
-export default function LessonPage() {
-  const { certSlug, moduleSlug, lessonSlug } = useParams();
-  const { data: session } = useSession();
-  const router = useRouter();
-  const [lesson, setLesson] = useState<LessonDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [completing, setCompleting] = useState(false);
+export default async function LessonPage({ params }: Props) {
+  const { certSlug, moduleSlug, lessonSlug } = params;
+  const userId = await getUserId();
+  if (userId === null) redirect("/login");
 
-  useEffect(() => {
-    // Find lesson by slug path
-    fetch(`/api/certifications/${certSlug}`)
-      .then((res) => res.json())
-      .then((certData) => {
-        const module = certData.modules?.find(
-          (m: { slug: string }) => m.slug === moduleSlug
-        );
-        if (!module) return;
-        const lessonMeta = module.lessons?.find(
-          (l: { slug: string }) => l.slug === lessonSlug
-        );
-        if (!lessonMeta) return;
+  const lesson = await getLessonPage(certSlug, moduleSlug, lessonSlug, userId);
+  if (lesson === null) notFound();
 
-        return fetch(`/api/lessons/${lessonMeta.id}`);
-      })
-      .then((res) => res?.json())
-      .then((data) => {
-        if (data) setLesson(data);
-        setLoading(false);
-      });
-  }, [certSlug, moduleSlug, lessonSlug]);
-
-  const markComplete = async () => {
-    if (!lesson) return;
-    setCompleting(true);
-    await fetch(`/api/lessons/${lesson.id}/progress`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "completed" }),
-    });
-    setCompleting(false);
-
-    // Navigate to next lesson
-    if (lesson.module.lessons) {
-      const currentIdx = lesson.module.lessons.findIndex(
-        (l) => l.slug === lessonSlug
-      );
-      const next = lesson.module.lessons[currentIdx + 1];
-      if (next) {
-        router.push(`/learn/${certSlug}/${moduleSlug}/${next.slug}`);
-      } else {
-        router.push(`/certifications/${certSlug}`);
-      }
-    }
-  };
-
-  const isCompleted = lesson?.progress?.[0]?.status === "completed";
-
-  if (loading) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-12 animate-pulse">
-        <div className="h-8 w-64 bg-kube-800 rounded mb-4" />
-        <div className="h-4 w-full bg-kube-800 rounded mb-2" />
-        <div className="h-4 w-3/4 bg-kube-800 rounded mb-2" />
-        <div className="h-4 w-1/2 bg-kube-800 rounded" />
-      </div>
-    );
-  }
-
-  if (!lesson) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-12 text-center">
-        <h1 className="text-2xl font-bold text-white mb-4">
-          Lesson not found
-        </h1>
-        <Link href={`/certifications/${certSlug}`} className="btn-primary">
-          Back to certification
-        </Link>
-      </div>
-    );
-  }
-
-  const currentIdx = lesson.module.lessons.findIndex(
-    (l) => l.slug === lessonSlug
-  );
-  const prevLesson = lesson.module.lessons[currentIdx - 1];
-  const nextLesson = lesson.module.lessons[currentIdx + 1];
+  const pathHref = `/certifications/${certSlug}`;
+  const lessonHref = (slug: string) => `/learn/${certSlug}/${moduleSlug}/${slug}`;
+  const nextHref = lesson.nextSlug ? lessonHref(lesson.nextSlug) : pathHref;
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-kube-400 mb-6">
-        <Link
-          href={`/certifications/${certSlug}`}
-          className="hover:text-white transition"
-        >
-          {lesson.module.certification.shortName}
+      <nav className="flex flex-wrap items-center gap-2 text-sm text-kube-400 mb-6" aria-label="Breadcrumb">
+        <Link href={pathHref} className="hover:text-white transition">
+          {lesson.certificationShortName}
         </Link>
         <ChevronRight size={14} />
-        <span className="text-kube-300">{lesson.module.name}</span>
+        <span className="text-kube-300">{lesson.moduleName}</span>
         <ChevronRight size={14} />
         <span className="text-white">{lesson.title}</span>
-      </div>
+      </nav>
 
-      {/* Lesson Header */}
       <div className="glass-card p-6 mb-8">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              {lesson.type === "reading" && (
-                <BookOpen size={20} className="text-kube-400" />
-              )}
-              {lesson.type === "quiz" && (
-                <Brain size={20} className="text-accent-purple" />
-              )}
-              {lesson.type === "lab" && (
-                <Terminal size={20} className="text-accent-green" />
-              )}
+              {TYPE_ICONS[lesson.type]}
               <h1 className="text-2xl font-bold text-white">{lesson.title}</h1>
             </div>
             <div className="flex items-center gap-4 text-sm text-kube-400">
@@ -191,12 +62,12 @@ export default function LessonPage() {
                 <Zap size={14} className="text-accent-yellow" />
                 {lesson.xpReward} XP
               </span>
-              <span className="capitalize px-2 py-0.5 rounded-full text-xs border lesson-type-${lesson.type}">
+              <span className={`capitalize px-2 py-0.5 rounded-full text-xs border lesson-type-${lesson.type}`}>
                 {lesson.type}
               </span>
             </div>
           </div>
-          {isCompleted && (
+          {lesson.completed && (
             <div className="flex items-center gap-2 text-accent-green bg-accent-green/10 px-3 py-1.5 rounded-lg">
               <CheckCircle2 size={16} />
               <span className="text-sm font-medium">Completed</span>
@@ -205,73 +76,59 @@ export default function LessonPage() {
         </div>
       </div>
 
-      {/* Lesson Content */}
-      {lesson.type === "reading" && (
-        <div className="glass-card p-8 mb-8">
-          <MarkdownRenderer content={lesson.content} />
+      {lesson.unlocked === false && (
+        <div className="glass-card p-8 mb-8 text-center">
+          <Lock size={40} className="mx-auto text-kube-500 mb-4" />
+          <h2 className="text-xl font-semibold text-white mb-2">This module is locked</h2>
+          <p className="text-kube-400 mb-6">Finish every lesson in the previous module to unlock it.</p>
+          <Link href={pathHref} className="btn-primary">
+            Back to the path
+          </Link>
         </div>
       )}
 
-      {lesson.type === "quiz" && (
+      {lesson.unlocked && lesson.type === "reading" && (
+        <>
+          <div className="glass-card p-8 mb-8">
+            <Markdown content={lesson.content} />
+          </div>
+          {lesson.completed === false && <CompleteLessonButton lessonId={lesson.id} nextHref={nextHref} />}
+        </>
+      )}
+
+      {lesson.unlocked && lesson.type === "quiz" && (
         <QuizView
           questions={lesson.quizQuestions}
           lessonId={lesson.id}
-          onComplete={markComplete}
+          continueHref={nextHref}
+          continueLabel={lesson.nextSlug ? "Next lesson" : "Back to path"}
         />
       )}
 
-      {lesson.type === "lab" && lesson.labConfig && (
+      {lesson.unlocked && lesson.type === "lab" && lesson.labConfig && (
         <LabView
-          labConfig={lesson.labConfig}
-          lessonContent={lesson.content}
-          onComplete={markComplete}
+          labConfigId={lesson.labConfig.id}
+          hints={lesson.labConfig.hints}
+          timeLimit={lesson.labConfig.timeLimit}
+          instructions={<Markdown content={lesson.labConfig.instructions} />}
+          background={lesson.content ? <Markdown content={lesson.content} /> : null}
+          continueHref={nextHref}
         />
       )}
 
-      {/* Complete button for reading lessons */}
-      {lesson.type === "reading" && !isCompleted && (
-        <div className="text-center mb-8">
-          <button
-            onClick={markComplete}
-            disabled={completing}
-            className="btn-primary flex items-center gap-2 mx-auto"
-          >
-            <CheckCircle2 size={18} />
-            {completing ? "Marking complete..." : "Mark as Complete"}
-          </button>
-        </div>
-      )}
-
-      {/* Navigation */}
       <div className="flex items-center justify-between">
-        {prevLesson ? (
-          <Link
-            href={`/learn/${certSlug}/${moduleSlug}/${prevLesson.slug}`}
-            className="btn-secondary flex items-center gap-2"
-          >
+        {lesson.previousSlug ? (
+          <Link href={lessonHref(lesson.previousSlug)} className="btn-secondary flex items-center gap-2">
             <ChevronLeft size={18} />
             Previous
           </Link>
         ) : (
           <div />
         )}
-        {nextLesson ? (
-          <Link
-            href={`/learn/${certSlug}/${moduleSlug}/${nextLesson.slug}`}
-            className="btn-primary flex items-center gap-2"
-          >
-            Next Lesson
-            <ChevronRight size={18} />
-          </Link>
-        ) : (
-          <Link
-            href={`/certifications/${certSlug}`}
-            className="btn-primary flex items-center gap-2"
-          >
-            Back to Path
-            <ChevronRight size={18} />
-          </Link>
-        )}
+        <Link href={nextHref} className="btn-primary flex items-center gap-2">
+          {lesson.nextSlug ? "Next Lesson" : "Back to Path"}
+          <ChevronRight size={18} />
+        </Link>
       </div>
     </div>
   );

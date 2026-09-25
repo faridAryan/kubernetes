@@ -37,3 +37,10 @@ next-env.d.ts
 # prisma
 prisma/dev.db
 prisma/dev.db-journal
+
+# seed bundle built for the container image
+/dist
+
+# CDK output
+/infra/cdk.out
+/infra/node_modules

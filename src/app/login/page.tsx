@@ -25,11 +25,17 @@ export default function LoginPage() {
     });
 
     if (result?.error) {
-      setError("Invalid email or password");
+      // Server sends either the generic credentials error or the rate-limit message
+      setError(result.error === "CredentialsSignin" ? "Invalid email or password" : result.error);
       setLoading(false);
-    } else {
-      router.push("/dashboard");
+      return;
     }
+
+    // Only follow same-site relative paths to avoid open redirects
+    const callbackUrl = new URLSearchParams(window.location.search).get("callbackUrl");
+    const isSafe = callbackUrl !== null && callbackUrl.startsWith("/") && callbackUrl.startsWith("//") === false;
+    router.push(isSafe && callbackUrl ? callbackUrl : "/dashboard");
+    router.refresh();
   };
 
   return (

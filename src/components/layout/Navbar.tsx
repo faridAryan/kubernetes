@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect } from "react";
 import {
@@ -14,16 +15,29 @@ import {
   Flame,
   Zap,
   User,
+  RotateCcw,
 } from "lucide-react";
 
 export default function Navbar() {
   const { data: session } = useSession();
   const [isOpen, setIsOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [stats, setStats] = useState({ level: 1, streak: 0 });
+  const pathname = usePathname();
+  const signedIn = session !== null && session !== undefined;
+
+  // Refresh level/streak after navigation, since learning actions change them
+  useEffect(() => {
+    if (signedIn === false) return;
+    fetch("/api/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data && setStats(data))
+      .catch(() => undefined);
+  }, [signedIn, pathname]);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 10);
-    window.addEventListener("scroll", handleScroll);
+    window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
@@ -64,6 +78,10 @@ export default function Navbar() {
 
             {session ? (
               <>
+                <Link href="/review" className="btn-ghost flex items-center gap-2">
+                  <RotateCcw size={18} />
+                  <span>Review</span>
+                </Link>
                 <Link
                   href="/dashboard"
                   className="btn-ghost flex items-center gap-2"
@@ -74,7 +92,7 @@ export default function Navbar() {
                 <div className="flex items-center gap-3 ml-4 pl-4 border-l border-kube-700">
                   <div className="flex items-center gap-1 text-accent-orange">
                     <Flame size={16} />
-                    <span className="text-sm font-semibold">0</span>
+                    <span className="text-sm font-semibold">{stats.streak}</span>
                   </div>
                   <Link
                     href="/dashboard"
@@ -86,13 +104,14 @@ export default function Navbar() {
                     <div className="flex items-center gap-1">
                       <Zap size={12} className="text-accent-yellow" />
                       <span className="text-sm font-medium text-kube-200">
-                        Lv 1
+                        Lv {stats.level}
                       </span>
                     </div>
                   </Link>
                   <button
                     onClick={() => signOut()}
                     className="btn-ghost text-kube-500"
+                    aria-label="Sign out"
                   >
                     <LogOut size={18} />
                   </button>
@@ -147,6 +166,13 @@ export default function Navbar() {
             </Link>
             {session ? (
               <>
+                <Link
+                  href="/review"
+                  className="block btn-ghost w-full text-left"
+                  onClick={() => setIsOpen(false)}
+                >
+                  Review
+                </Link>
                 <Link
                   href="/dashboard"
                   className="block btn-ghost w-full text-left"

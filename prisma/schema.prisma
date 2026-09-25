@@ -3,24 +3,77 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
+enum Role {
+  user
+  admin
+}
+
+enum Difficulty {
+  beginner
+  intermediate
+  advanced
+  expert
+}
+
+enum LessonType {
+  reading
+  quiz
+  lab
+}
+
+enum ProgressStatus {
+  not_started
+  in_progress
+  completed
+}
+
+enum QuestionType {
+  multiple_choice
+  true_false
+  multi_select
+}
+
+enum LabSessionStatus {
+  active
+  completed
+  expired
+}
+
+enum BadgeCategory {
+  achievement
+  certification
+  streak
+  skill
+}
+
+enum AchievementType {
+  lesson_complete
+  quiz_correct
+  lab_complete
+  enrollment
+  level_up
+  badge_earned
+  exam_passed
+}
+
 model User {
-  id            String    @id @default(cuid())
+  id            String   @id @default(cuid())
   name          String?
-  email         String    @unique
+  email         String   @unique
   password      String
   image         String?
-  role          String    @default("user") // user, admin
-  xp            Int       @default(0)
-  level         Int       @default(1)
-  streak        Int       @default(0)
-  longestStreak Int       @default(0)
-  lastActiveAt  DateTime  @default(now())
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  role          Role     @default(user)
+  xp            Int      @default(0)
+  level         Int      @default(1)
+  streak        Int      @default(0)
+  longestStreak Int      @default(0)
+  lastActiveAt  DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   enrollments    Enrollment[]
   lessonProgress LessonProgress[]
@@ -28,155 +81,174 @@ model User {
   labSessions    LabSession[]
   badges         UserBadge[]
   achievements   Achievement[]
+  examAttempts   ExamAttempt[]
+  reviewItems    ReviewItem[]
+  certificates   Certificate[]
+
+  @@index([xp])
 }
 
 model CertificationPath {
-  id          String   @id @default(cuid())
-  slug        String   @unique
-  name        String
-  shortName   String   // CKA, CKAD, CKS, KCNA
-  description String
-  icon        String   // emoji or icon name
-  color       String   // theme color
-  difficulty  String   // beginner, intermediate, advanced, expert
-  totalXp     Int      @default(0)
-  estimatedHours Int   @default(0)
-  order       Int      @default(0)
-  createdAt   DateTime @default(now())
+  id                  String     @id @default(cuid())
+  slug                String     @unique
+  name                String
+  shortName           String // CKA, CKAD, CKS, KCNA
+  description         String
+  icon                String // emoji
+  color               String // theme color
+  difficulty          Difficulty
+  estimatedHours      Int        @default(0)
+  order               Int        @default(0)
+  examQuestionCount   Int        @default(15)
+  examDurationMinutes Int        @default(30)
+  examPassPercent     Int        @default(66)
+  createdAt           DateTime   @default(now())
 
-  modules     Module[]
-  enrollments Enrollment[]
+  modules      Module[]
+  enrollments  Enrollment[]
+  examAttempts ExamAttempt[]
+  certificates Certificate[]
 }
 
 model Module {
-  id                String   @id @default(cuid())
-  slug              String
-  name              String
-  description       String
-  order             Int
-  certificationId   String
-  xpReward          Int      @default(100)
-  createdAt         DateTime @default(now())
+  id              String   @id @default(cuid())
+  slug            String
+  name            String
+  description     String
+  order           Int
+  certificationId String
+  xpReward        Int      @default(100)
+  createdAt       DateTime @default(now())
 
-  certification CertificationPath @relation(fields: [certificationId], references: [id])
+  certification CertificationPath @relation(fields: [certificationId], references: [id], onDelete: Cascade)
   lessons       Lesson[]
 
   @@unique([certificationId, slug])
 }
 
 model Lesson {
-  id          String   @id @default(cuid())
-  slug        String
-  title       String
-  content     String   // markdown content
-  type        String   // reading, quiz, lab
-  order       Int
-  moduleId    String
-  xpReward    Int      @default(50)
-  duration    Int      @default(10) // minutes
-  createdAt   DateTime @default(now())
+  id        String     @id @default(cuid())
+  slug      String
+  title     String
+  content   String // markdown content
+  type      LessonType
+  order     Int
+  moduleId  String
+  xpReward  Int        @default(50)
+  duration  Int        @default(10) // minutes
+  createdAt DateTime   @default(now())
 
-  module         Module           @relation(fields: [moduleId], references: [id])
-  progress       LessonProgress[]
-  quizQuestions  QuizQuestion[]
-  labConfig      LabConfig?
+  module        Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  progress      LessonProgress[]
+  quizQuestions QuizQuestion[]
+  labConfig     LabConfig?
 
   @@unique([moduleId, slug])
 }
 
 model LessonProgress {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   userId      String
   lessonId    String
-  status      String   @default("not_started") // not_started, in_progress, completed
-  score       Int?     // for quizzes
+  status      ProgressStatus @default(not_started)
+  score       Int?
   completedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
-  user   User   @relation(fields: [userId], references: [id])
-  lesson Lesson @relation(fields: [lessonId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@unique([userId, lessonId])
 }
 
 model QuizQuestion {
-  id           String   @id @default(cuid())
-  lessonId     String
-  question     String
-  type         String   // multiple_choice, true_false, fill_blank, multi_select
-  options      String   // JSON array of options
-  correctAnswer String  // JSON - correct answer(s)
-  explanation  String   // explanation of correct answer
-  order        Int
-  xpReward     Int      @default(10)
+  id            String       @id @default(cuid())
+  lessonId      String
+  question      String
+  type          QuestionType
+  options       Json // string[]
+  correctAnswer Json // string | string[]
+  explanation   String
+  order         Int
+  xpReward      Int          @default(10)
 
-  lesson       Lesson        @relation(fields: [lessonId], references: [id])
-  attempts     QuizAttempt[]
+  lesson      Lesson        @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  attempts    QuizAttempt[]
+  reviewItems ReviewItem[]
+
+  @@index([lessonId])
 }
 
 model QuizAttempt {
   id         String   @id @default(cuid())
   userId     String
   questionId String
-  answer     String   // user's answer
+  answer     Json
   correct    Boolean
   xpEarned   Int      @default(0)
   createdAt  DateTime @default(now())
 
-  user     User         @relation(fields: [userId], references: [id])
-  question QuizQuestion @relation(fields: [questionId], references: [id])
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, questionId, correct])
 }
 
 model LabConfig {
   id           String @id @default(cuid())
   lessonId     String @unique
   instructions String // markdown instructions
-  initScript   String // script to set up the lab environment
-  validationScript String // script to validate completion
-  hints        String // JSON array of hints
+  initialState Json // simulated cluster state the lab starts from
+  checks       Json // LabCheck[] evaluated against the final state
+  hints        Json // string[]
   timeLimit    Int    @default(30) // minutes
 
-  lesson      Lesson       @relation(fields: [lessonId], references: [id])
+  lesson      Lesson       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
   labSessions LabSession[]
 }
 
 model LabSession {
-  id          String    @id @default(cuid())
+  id          String           @id @default(cuid())
   userId      String
   labConfigId String
-  status      String    @default("active") // active, completed, expired
-  startedAt   DateTime  @default(now())
+  status      LabSessionStatus @default(active)
+  state       Json // live simulated cluster state
+  commands    String[]
+  startedAt   DateTime         @default(now())
+  expiresAt   DateTime
   completedAt DateTime?
   score       Int?
 
-  user      User      @relation(fields: [userId], references: [id])
-  labConfig LabConfig @relation(fields: [labConfigId], references: [id])
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  labConfig LabConfig @relation(fields: [labConfigId], references: [id], onDelete: Cascade)
+
+  @@index([userId, labConfigId, status])
 }
 
 model Enrollment {
-  id                String   @id @default(cuid())
-  userId            String
-  certificationId   String
-  progress          Float    @default(0) // 0-100 percentage
-  enrolledAt        DateTime @default(now())
-  completedAt       DateTime?
+  id              String    @id @default(cuid())
+  userId          String
+  certificationId String
+  progress        Float     @default(0) // 0-100 percentage
+  enrolledAt      DateTime  @default(now())
+  completedAt     DateTime?
 
-  user          User              @relation(fields: [userId], references: [id])
-  certification CertificationPath @relation(fields: [certificationId], references: [id])
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  certification CertificationPath @relation(fields: [certificationId], references: [id], onDelete: Cascade)
 
   @@unique([userId, certificationId])
 }
 
 model Badge {
-  id          String @id @default(cuid())
-  slug        String @unique
+  id          String        @id @default(cuid())
+  slug        String        @unique
   name        String
   description String
   icon        String
-  category    String // achievement, certification, streak, skill
-  requirement String // JSON - conditions to earn
-  xpReward    Int    @default(50)
+  category    BadgeCategory
+  requirement Json // BadgeRequirement
+  xpReward    Int           @default(50)
 
   users UserBadge[]
 }
@@ -187,19 +259,75 @@ model UserBadge {
   badgeId  String
   earnedAt DateTime @default(now())
 
-  user  User  @relation(fields: [userId], references: [id])
-  badge Badge @relation(fields: [badgeId], references: [id])
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
 
   @@unique([userId, badgeId])
 }
 
 model Achievement {
-  id          String   @id @default(cuid())
+  id          String          @id @default(cuid())
   userId      String
-  type        String   // lesson_complete, quiz_perfect, lab_complete, streak, level_up
+  type        AchievementType
   description String
   xpEarned    Int
-  createdAt   DateTime @default(now())
+  createdAt   DateTime        @default(now())
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model ExamAttempt {
+  id              String    @id @default(cuid())
+  userId          String
+  certificationId String
+  questionIds     String[]
+  answers         Json? // Record<questionId, answer>
+  score           Int? // percentage
+  passed          Boolean?
+  startedAt       DateTime  @default(now())
+  expiresAt       DateTime
+  submittedAt     DateTime?
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  certification CertificationPath @relation(fields: [certificationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, certificationId])
+}
+
+// Spaced repetition: questions answered wrong come back for review
+model ReviewItem {
+  id           String   @id @default(cuid())
+  userId       String
+  questionId   String
+  intervalDays Int      @default(1)
+  dueAt        DateTime
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionId])
+  @@index([userId, dueAt])
+}
+
+model Certificate {
+  id              String   @id @default(cuid())
+  code            String   @unique @default(cuid())
+  userId          String
+  certificationId String
+  examScore       Int
+  issuedAt        DateTime @default(now())
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  certification CertificationPath @relation(fields: [certificationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, certificationId])
+}
+
+// Fixed-window counter shared by all app instances
+model RateLimit {
+  key         String   @id
+  count       Int
+  windowStart DateTime
 }
