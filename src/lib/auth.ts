@@ -18,19 +18,25 @@ export const authOptions: NextAuthOptions = {
 
         const user = await prisma.user.findUnique({
           where: { email: credentials.email },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            image: true,
+            password: true,
+            streak: true,
+            longestStreak: true,
+            lastActiveAt: true,
+          },
         });
 
-        if (!user) {
-          throw new Error("No user found");
-        }
+        // Same message for unknown email and wrong password to avoid account enumeration
+        const isValid =
+          user !== null &&
+          (await bcrypt.compare(credentials.password, user.password));
 
-        const isValid = await bcrypt.compare(
-          credentials.password,
-          user.password
-        );
-
-        if (!isValid) {
-          throw new Error("Invalid password");
+        if (user === null || isValid === false) {
+          throw new Error("Invalid email or password");
         }
 
         // Update streak
@@ -53,6 +59,7 @@ export const authOptions: NextAuthOptions = {
             streak: newStreak,
             longestStreak: Math.max(newStreak, user.longestStreak),
           },
+          select: { id: true },
         });
 
         return {

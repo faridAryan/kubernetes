@@ -4,6 +4,8 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { awardXp } from "@/lib/gamification";
 
+const ALLOWED_STATUSES = ["not_started", "in_progress", "completed"];
+
 export async function POST(
   request: Request,
   { params }: { params: { id: string } }
@@ -13,66 +15,62 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const userId = session.user.id;
   const { status, score } = await request.json();
 
-  const lesson = await prisma.lesson.findUnique({
-    where: { id: params.id },
-    include: { module: true },
-  });
+  if (ALLOWED_STATUSES.includes(status) === false) {
+    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+  }
+
+  const [lesson, previous] = await Promise.all([
+    prisma.lesson.findUnique({
+      where: { id: params.id },
+      select: {
+        title: true,
+        xpReward: true,
+        module: { select: { certificationId: true } },
+      },
+    }),
+    prisma.lessonProgress.findUnique({
+      where: { userId_lessonId: { userId, lessonId: params.id } },
+      select: { status: true },
+    }),
+  ]);
 
   if (!lesson) {
     return NextResponse.json({ error: "Lesson not found" }, { status: 404 });
   }
 
+  const isCompleted = status === "completed";
+  const data = {
+    status,
+    score: score ?? undefined,
+    completedAt: isCompleted ? new Date() : undefined,
+  };
+
   const progress = await prisma.lessonProgress.upsert({
-    where: {
-      userId_lessonId: {
-        userId: session.user.id,
-        lessonId: params.id,
-      },
-    },
-    update: {
-      status,
-      score: score ?? undefined,
-      completedAt: status === "completed" ? new Date() : undefined,
-    },
-    create: {
-      userId: session.user.id,
-      lessonId: params.id,
-      status,
-      score: score ?? undefined,
-      completedAt: status === "completed" ? new Date() : undefined,
-    },
+    where: { userId_lessonId: { userId, lessonId: params.id } },
+    update: data,
+    create: { userId, lessonId: params.id, ...data },
   });
 
-  if (status === "completed") {
-    await awardXp(
-      session.user.id,
-      lesson.xpReward,
-      "lesson_complete",
-      `Completed lesson: ${lesson.title}`
-    );
+  // Reward only the first completion so repeated submissions can't farm XP
+  const isFirstCompletion = isCompleted && previous?.status !== "completed";
 
-    // Update enrollment progress
-    const totalLessons = await prisma.lesson.count({
-      where: { module: { certificationId: lesson.module.certificationId } },
-    });
-    const completedLessons = await prisma.lessonProgress.count({
-      where: {
-        userId: session.user.id,
-        status: "completed",
-        lesson: { module: { certificationId: lesson.module.certificationId } },
-      },
-    });
+  if (isFirstCompletion) {
+    const certificationId = lesson.module.certificationId;
+
+    const [, totalLessons, completedLessons] = await Promise.all([
+      awardXp(userId, lesson.xpReward, "lesson_complete", `Completed lesson: ${lesson.title}`),
+      prisma.lesson.count({ where: { module: { certificationId } } }),
+      prisma.lessonProgress.count({
+        where: { userId, status: "completed", lesson: { module: { certificationId } } },
+      }),
+    ]);
 
     await prisma.enrollment.updateMany({
-      where: {
-        userId: session.user.id,
-        certificationId: lesson.module.certificationId,
-      },
-      data: {
-        progress: Math.round((completedLessons / totalLessons) * 100),
-      },
+      where: { userId, certificationId },
+      data: { progress: Math.round((completedLessons / totalLessons) * 100) },
     });
   }
 

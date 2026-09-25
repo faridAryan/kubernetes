@@ -1,15 +1,12 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   Terminal as TermIcon,
   Play,
   CheckCircle2,
   Lightbulb,
-  ChevronDown,
-  ChevronRight,
   Clock,
-  Send,
   AlertTriangle,
 } from "lucide-react";
 import MarkdownRenderer from "@/components/lesson/MarkdownRenderer";
@@ -117,11 +114,15 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
   const [showHints, setShowHints] = useState(false);
   const [currentHint, setCurrentHint] = useState(0);
   const [timeLeft, setTimeLeft] = useState(labConfig.timeLimit * 60);
-  const [validated, setValidated] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const hints: string[] = JSON.parse(labConfig.hints);
+  const hints: string[] = useMemo(
+    () => JSON.parse(labConfig.hints),
+    [labConfig.hints]
+  );
 
   useEffect(() => {
     if (!started) return;
@@ -143,7 +144,20 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
     }
   }, [lines]);
 
-  const handleStart = () => {
+  const handleStart = async () => {
+    setStarting(true);
+    const res = await fetch(`/api/labs/${labConfig.id}/start`, {
+      method: "POST",
+    });
+    setStarting(false);
+
+    if (res.ok === false) {
+      setLines([{ type: "error", content: "Could not start the lab. Please sign in and try again." }]);
+      return;
+    }
+
+    const labSession: { id: string } = await res.json();
+    setSessionId(labSession.id);
     setStarted(true);
     setLines([
       {
@@ -189,13 +203,17 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        sessionId: "simulated",
+        sessionId,
         commands,
       }),
     });
 
     const data = await res.json();
-    setValidated(true);
+
+    if (res.ok === false) {
+      setLines((prev) => [...prev, { type: "error", content: data.error }]);
+      return;
+    }
 
     setLines((prev) => [
       ...prev,
@@ -244,11 +262,17 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
         <div className="text-center">
           <button
             onClick={handleStart}
+            disabled={starting}
             className="btn-primary flex items-center gap-2 mx-auto text-lg px-8 py-4"
           >
             <Play size={20} />
-            Start Lab
+            {starting ? "Starting..." : "Start Lab"}
           </button>
+          {lines.map((line, i) => (
+            <p key={i} className="text-sm text-accent-red mt-2">
+              {line.content}
+            </p>
+          ))}
           <p className="text-sm text-kube-400 mt-2">
             Time limit: {labConfig.timeLimit} minutes
           </p>

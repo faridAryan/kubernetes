@@ -13,12 +13,19 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const userId = session.user.id;
   const { answer } = await request.json();
 
-  const question = await prisma.quizQuestion.findUnique({
-    where: { id: params.questionId },
-    include: { lesson: true },
-  });
+  const [question, previousCorrect] = await Promise.all([
+    prisma.quizQuestion.findUnique({
+      where: { id: params.questionId },
+      select: { correctAnswer: true, explanation: true, xpReward: true },
+    }),
+    prisma.quizAttempt.findFirst({
+      where: { userId, questionId: params.questionId, correct: true },
+      select: { id: true },
+    }),
+  ]);
 
   if (!question) {
     return NextResponse.json(
@@ -28,32 +35,32 @@ export async function POST(
   }
 
   const correctAnswer = JSON.parse(question.correctAnswer);
-  const isCorrect =
-    JSON.stringify(answer) === JSON.stringify(correctAnswer);
+  const serializedAnswer = JSON.stringify(answer);
+  const isCorrect = serializedAnswer === JSON.stringify(correctAnswer);
 
-  const attempt = await prisma.quizAttempt.create({
-    data: {
-      userId: session.user.id,
-      questionId: params.questionId,
-      answer: JSON.stringify(answer),
-      correct: isCorrect,
-      xpEarned: isCorrect ? question.xpReward : 0,
-    },
-  });
+  // XP is granted only for the first correct answer to a question
+  const xpEarned = isCorrect && previousCorrect === null ? question.xpReward : 0;
 
-  if (isCorrect) {
-    await awardXp(
-      session.user.id,
-      question.xpReward,
-      "quiz_correct",
-      `Correctly answered quiz question`
-    );
-  }
+  await Promise.all([
+    prisma.quizAttempt.create({
+      data: {
+        userId,
+        questionId: params.questionId,
+        answer: serializedAnswer,
+        correct: isCorrect,
+        xpEarned,
+      },
+      select: { id: true },
+    }),
+    xpEarned > 0
+      ? awardXp(userId, xpEarned, "quiz_correct", "Correctly answered quiz question")
+      : null,
+  ]);
 
   return NextResponse.json({
     correct: isCorrect,
     correctAnswer,
     explanation: question.explanation,
-    xpEarned: isCorrect ? question.xpReward : 0,
+    xpEarned,
   });
 }

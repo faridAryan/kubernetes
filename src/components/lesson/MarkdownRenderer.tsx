@@ -1,11 +1,26 @@
 "use client";
 
+import { useMemo } from "react";
+
 interface Props {
   content: string;
 }
 
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+// Escape raw HTML first so content like `<pod-name>` renders as text and can't inject markup
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+}
+
 function processMarkdown(text: string): string {
-  let html = text;
+  let html = escapeHtml(text);
 
   // Code blocks
   html = html.replace(
@@ -46,7 +61,7 @@ function processMarkdown(text: string): string {
 
   // Blockquotes
   html = html.replace(
-    /^> (.*$)/gm,
+    /^&gt; (.*$)/gm,
     '<blockquote class="border-l-4 border-kube-500 pl-4 italic text-kube-300 my-4">$1</blockquote>'
   );
 
@@ -64,7 +79,7 @@ function processMarkdown(text: string): string {
 
   // Links
   html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
     '<a href="$2" class="text-kube-400 hover:text-kube-300 underline" target="_blank" rel="noopener noreferrer">$1</a>'
   );
 
@@ -81,10 +96,12 @@ function processMarkdown(text: string): string {
 }
 
 export default function MarkdownRenderer({ content }: Props) {
+  const html = useMemo(() => processMarkdown(content), [content]);
+
   return (
     <div
       className="markdown-content"
-      dangerouslySetInnerHTML={{ __html: processMarkdown(content) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -45,9 +45,10 @@ export default function QuizView({ questions, lessonId, onComplete }: Props) {
   const [submitting, setSubmitting] = useState(false);
 
   const currentQuestion = questions[currentIdx];
-  const options: string[] = currentQuestion
-    ? JSON.parse(currentQuestion.options)
-    : [];
+  const options: string[] = useMemo(
+    () => (currentQuestion ? JSON.parse(currentQuestion.options) : []),
+    [currentQuestion]
+  );
 
   const handleSubmit = async () => {
     if (!selectedAnswer || !currentQuestion) return;

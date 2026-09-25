@@ -11,7 +11,7 @@ import {
   Medal,
   Crown,
 } from "lucide-react";
-import { getLevelTitle } from "@/lib/gamification";
+import { getLevelTitle } from "@/lib/levels";
 
 interface LeaderboardUser {
   id: string;

@@ -8,25 +8,51 @@ export async function GET(
   { params }: { params: { slug: string } }
 ) {
   const session = await getServerSession(authOptions);
+  const userId = session?.user?.id;
 
   const certification = await prisma.certificationPath.findUnique({
     where: { slug: params.slug },
-    include: {
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      shortName: true,
+      description: true,
+      icon: true,
+      color: true,
+      difficulty: true,
+      totalXp: true,
+      estimatedHours: true,
       modules: {
         orderBy: { order: "asc" },
-        include: {
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          description: true,
+          order: true,
+          xpReward: true,
           lessons: {
             orderBy: { order: "asc" },
-            include: session?.user
-              ? {
-                  progress: {
-                    where: { userId: session.user.id },
-                  },
-                }
-              : undefined,
+            select: {
+              id: true,
+              slug: true,
+              title: true,
+              type: true,
+              order: true,
+              xpReward: true,
+              duration: true,
+              progress: userId
+                ? { where: { userId }, select: { status: true } }
+                : false,
+            },
           },
         },
       },
+      // Fetch the user's enrollment in the same query instead of a second round trip
+      enrollments: userId
+        ? { where: { userId }, select: { id: true, progress: true } }
+        : false,
       _count: { select: { enrollments: true } },
     },
   });
@@ -38,17 +64,6 @@ export async function GET(
     );
   }
 
-  let enrollment = null;
-  if (session?.user) {
-    enrollment = await prisma.enrollment.findUnique({
-      where: {
-        userId_certificationId: {
-          userId: session.user.id,
-          certificationId: certification.id,
-        },
-      },
-    });
-  }
-
-  return NextResponse.json({ ...certification, enrollment });
+  const { enrollments, ...rest } = certification;
+  return NextResponse.json({ ...rest, enrollment: enrollments?.[0] ?? null });
 }

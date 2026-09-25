@@ -1,56 +1,8 @@
-"use client";
-
-import { useState, useEffect } from "react";
 import Link from "next/link";
-import {
-  Terminal,
-  Clock,
-  Zap,
-  Search,
-  ChevronRight,
-  Play,
-} from "lucide-react";
-import { getDifficultyColor, getDifficultyBg, formatDuration } from "@/lib/utils";
-
-interface Lab {
-  id: string;
-  slug: string;
-  title: string;
-  duration: number;
-  xpReward: number;
-  module: {
-    slug: string;
-    name: string;
-    certification: {
-      slug: string;
-      shortName: string;
-      difficulty: string;
-      icon: string;
-    };
-  };
-}
+import { Terminal, Zap, ChevronRight, Play } from "lucide-react";
+import { getDifficultyColor, getDifficultyBg } from "@/lib/utils";
 
 export default function LabsPage() {
-  const [labs, setLabs] = useState<Lab[]>([]);
-  const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Fetch all labs from certifications
-    fetch("/api/certifications")
-      .then((res) => res.json())
-      .then((certs) => {
-        const allLabs: Lab[] = [];
-        for (const cert of certs) {
-          for (const module of cert.modules || []) {
-            // The modules from the list endpoint don't include lessons, so we'll show certification-level lab info
-          }
-        }
-        setLabs(allLabs);
-        setLoading(false);
-      });
-  }, []);
-
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
       <div className="text-center mb-12">

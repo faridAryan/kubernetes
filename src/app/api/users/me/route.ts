@@ -11,16 +11,36 @@ export async function GET() {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      image: true,
+      xp: true,
+      level: true,
+      streak: true,
+      longestStreak: true,
       enrollments: {
-        include: { certification: true },
+        select: {
+          id: true,
+          progress: true,
+          certification: {
+            select: { slug: true, shortName: true, name: true, icon: true, color: true },
+          },
+        },
       },
       badges: {
-        include: { badge: true },
+        select: {
+          earnedAt: true,
+          badge: {
+            select: { name: true, icon: true, description: true, category: true },
+          },
+        },
       },
       achievements: {
         orderBy: { createdAt: "desc" },
-        take: 20,
+        take: 10,
+        select: { id: true, type: true, description: true, xpEarned: true, createdAt: true },
       },
       _count: {
         select: {
@@ -36,6 +56,5 @@ export async function GET() {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { password: _, ...userWithoutPassword } = user;
-  return NextResponse.json(userWithoutPassword);
+  return NextResponse.json(user);
 }

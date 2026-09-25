@@ -28,6 +28,8 @@ model User {
   labSessions    LabSession[]
   badges         UserBadge[]
   achievements   Achievement[]
+
+  @@index([xp])
 }
 
 model CertificationPath {
@@ -113,6 +115,8 @@ model QuizQuestion {
 
   lesson       Lesson        @relation(fields: [lessonId], references: [id])
   attempts     QuizAttempt[]
+
+  @@index([lessonId])
 }
 
 model QuizAttempt {
@@ -126,6 +130,8 @@ model QuizAttempt {
 
   user     User         @relation(fields: [userId], references: [id])
   question QuizQuestion @relation(fields: [questionId], references: [id])
+
+  @@index([userId, questionId, correct])
 }
 
 model LabConfig {
@@ -152,6 +158,8 @@ model LabSession {
 
   user      User      @relation(fields: [userId], references: [id])
   labConfig LabConfig @relation(fields: [labConfigId], references: [id])
+
+  @@index([userId, labConfigId, status])
 }
 
 model Enrollment {
@@ -202,4 +210,6 @@ model Achievement {
   createdAt   DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -65,31 +64,18 @@ interface LessonDetail {
 
 export default function LessonPage() {
   const { certSlug, moduleSlug, lessonSlug } = useParams();
-  const { data: session } = useSession();
   const router = useRouter();
   const [lesson, setLesson] = useState<LessonDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [completing, setCompleting] = useState(false);
 
   useEffect(() => {
-    // Find lesson by slug path
-    fetch(`/api/certifications/${certSlug}`)
-      .then((res) => res.json())
-      .then((certData) => {
-        const module = certData.modules?.find(
-          (m: { slug: string }) => m.slug === moduleSlug
-        );
-        if (!module) return;
-        const lessonMeta = module.lessons?.find(
-          (l: { slug: string }) => l.slug === lessonSlug
-        );
-        if (!lessonMeta) return;
-
-        return fetch(`/api/lessons/${lessonMeta.id}`);
-      })
-      .then((res) => res?.json())
+    fetch(
+      `/api/certifications/${certSlug}/modules/${moduleSlug}/lessons/${lessonSlug}`
+    )
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data) setLesson(data);
+        setLesson(data);
         setLoading(false);
       });
   }, [certSlug, moduleSlug, lessonSlug]);
@@ -191,7 +177,7 @@ export default function LessonPage() {
                 <Zap size={14} className="text-accent-yellow" />
                 {lesson.xpReward} XP
               </span>
-              <span className="capitalize px-2 py-0.5 rounded-full text-xs border lesson-type-${lesson.type}">
+              <span className={`capitalize px-2 py-0.5 rounded-full text-xs border lesson-type-${lesson.type}`}>
                 {lesson.type}
               </span>
             </div>

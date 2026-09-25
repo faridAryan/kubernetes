@@ -12,38 +12,28 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const labConfig = await prisma.labConfig.findUnique({
-    where: { id: params.id },
-  });
+  const userId = session.user.id;
+
+  const [labConfig, existingSession] = await Promise.all([
+    prisma.labConfig.findUnique({
+      where: { id: params.id },
+      select: { id: true },
+    }),
+    prisma.labSession.findFirst({
+      where: { userId, labConfigId: params.id, status: "active" },
+    }),
+  ]);
 
   if (!labConfig) {
     return NextResponse.json({ error: "Lab not found" }, { status: 404 });
   }
 
-  // Check for existing active session
-  const existingSession = await prisma.labSession.findFirst({
-    where: {
-      userId: session.user.id,
-      labConfigId: params.id,
-      status: "active",
-    },
-  });
+  // Reuse the active session so reloading the lab doesn't create duplicates
+  const labSession =
+    existingSession ??
+    (await prisma.labSession.create({
+      data: { userId, labConfigId: params.id },
+    }));
 
-  if (existingSession) {
-    return NextResponse.json(existingSession);
-  }
-
-  const labSession = await prisma.labSession.create({
-    data: {
-      userId: session.user.id,
-      labConfigId: params.id,
-    },
-  });
-
-  return NextResponse.json({
-    ...labSession,
-    instructions: labConfig.instructions,
-    hints: JSON.parse(labConfig.hints),
-    timeLimit: labConfig.timeLimit,
-  });
+  return NextResponse.json(labSession);
 }

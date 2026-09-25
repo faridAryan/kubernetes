@@ -10,19 +10,13 @@ import {
   BookOpen,
   Brain,
   Terminal,
-  Trophy,
   Star,
   TrendingUp,
   Award,
   ChevronRight,
   Clock,
 } from "lucide-react";
-import {
-  calculateLevel,
-  xpProgress,
-  xpForNextLevel,
-  getLevelTitle,
-} from "@/lib/gamification";
+import { xpProgress, xpForNextLevel, getLevelTitle } from "@/lib/levels";
 
 interface UserData {
   id: string;
@@ -67,7 +61,7 @@ interface UserData {
 }
 
 export default function DashboardPage() {
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const router = useRouter();
   const [user, setUser] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -309,7 +303,7 @@ export default function DashboardPage() {
                   </p>
                 </div>
               ) : (
-                user.achievements.slice(0, 10).map((achievement) => (
+                user.achievements.map((achievement) => (
                   <div
                     key={achievement.id}
                     className="p-4 flex items-center gap-3"
