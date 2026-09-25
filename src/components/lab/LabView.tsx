@@ -1,27 +1,27 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, type ReactNode, type KeyboardEvent, type FormEvent } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Terminal as TermIcon,
   Play,
   CheckCircle2,
+  Circle,
   Lightbulb,
   Clock,
   AlertTriangle,
+  ChevronRight,
+  RotateCcw,
 } from "lucide-react";
-import MarkdownRenderer from "@/components/lesson/MarkdownRenderer";
-
-interface LabConfig {
-  id: string;
-  instructions: string;
-  hints: string;
-  timeLimit: number;
-}
 
 interface Props {
-  labConfig: LabConfig;
-  lessonContent: string;
-  onComplete: () => void;
+  labConfigId: string;
+  hints: string[];
+  timeLimit: number;
+  instructions: ReactNode;
+  background: ReactNode;
+  continueHref: string;
 }
 
 interface TerminalLine {
@@ -29,300 +29,242 @@ interface TerminalLine {
   content: string;
 }
 
-// Simulated K8s command responses
-const K8S_RESPONSES: Record<string, string> = {
-  "kubectl get nodes":
-    "NAME           STATUS   ROLES           AGE   VERSION\ncontrol-plane  Ready    control-plane   5d    v1.28.0\nworker-1       Ready    <none>          5d    v1.28.0\nworker-2       Ready    <none>          5d    v1.28.0",
-  "kubectl get pods":
-    "NAME                     READY   STATUS    RESTARTS   AGE\nnginx-7854ff8877-abcde   1/1     Running   0          2m",
-  "kubectl get pods -A":
-    "NAMESPACE     NAME                                    READY   STATUS    RESTARTS   AGE\nkube-system   coredns-5d78c9869d-xxxxx                  1/1     Running   0          5d\nkube-system   etcd-control-plane                        1/1     Running   0          5d\nkube-system   kube-apiserver-control-plane               1/1     Running   0          5d\nkube-system   kube-controller-manager-control-plane      1/1     Running   0          5d\nkube-system   kube-proxy-xxxxx                          1/1     Running   0          5d\nkube-system   kube-scheduler-control-plane               1/1     Running   0          5d\ndefault       nginx-7854ff8877-abcde                    1/1     Running   0          2m",
-  "kubectl get namespaces":
-    "NAME              STATUS   AGE\ndefault           Active   5d\nkube-system       Active   5d\nkube-public       Active   5d\nkube-node-lease   Active   5d",
-  "kubectl get ns":
-    "NAME              STATUS   AGE\ndefault           Active   5d\nkube-system       Active   5d\nkube-public       Active   5d\nkube-node-lease   Active   5d",
-  "kubectl get services":
-    "NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE\nkubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   5d",
-  "kubectl get svc":
-    "NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE\nkubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   5d",
-  "kubectl version":
-    "Client Version: v1.28.0\nKustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3\nServer Version: v1.28.0",
-  "kubectl cluster-info":
-    "Kubernetes control plane is running at https://127.0.0.1:6443\nCoreDNS is running at https://127.0.0.1:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy",
-  "kubectl get deployments":
-    "NAME    READY   UP-TO-DATE   AVAILABLE   AGE\nnginx   1/1     1            1           2m",
-  "kubectl get deploy":
-    "NAME    READY   UP-TO-DATE   AVAILABLE   AGE\nnginx   1/1     1            1           2m",
-};
-
-function getCommandResponse(command: string): string {
-  // Check exact matches first
-  if (K8S_RESPONSES[command]) return K8S_RESPONSES[command];
-
-  // Check partial matches
-  const cmd = command.trim();
-
-  if (cmd.startsWith("kubectl run ")) {
-    const name = cmd.split(" ")[2] || "pod";
-    return `pod/${name} created`;
-  }
-  if (cmd.startsWith("kubectl create namespace ") || cmd.startsWith("kubectl create ns ")) {
-    const ns = cmd.split(" ").pop();
-    return `namespace/${ns} created`;
-  }
-  if (cmd.startsWith("kubectl create deployment ")) {
-    const name = cmd.split(" ")[3] || "deployment";
-    return `deployment.apps/${name} created`;
-  }
-  if (cmd.startsWith("kubectl apply -f ")) {
-    return "resource configured";
-  }
-  if (cmd.startsWith("kubectl delete ")) {
-    return `resource deleted`;
-  }
-  if (cmd.startsWith("kubectl describe ")) {
-    return `Name:         example\nNamespace:    default\nLabels:       app=example\nAnnotations:  <none>\nStatus:       Running`;
-  }
-  if (cmd.startsWith("kubectl expose ")) {
-    return "service/example exposed";
-  }
-  if (cmd.startsWith("kubectl scale ")) {
-    return "deployment.apps/example scaled";
-  }
-  if (cmd.startsWith("kubectl logs ")) {
-    return "Starting server on port 8080...\nReady to accept connections";
-  }
-  if (cmd.startsWith("kubectl exec ")) {
-    return "Connected to pod";
-  }
-  if (cmd === "clear") return "__CLEAR__";
-  if (cmd === "help") {
-    return "Available commands: kubectl, clear, help\nThis is a simulated Kubernetes environment for practice.";
-  }
-  if (cmd.startsWith("kubectl")) {
-    return `Command executed: ${cmd}`;
-  }
-
-  return `bash: ${cmd.split(" ")[0]}: command not found\nHint: This lab focuses on kubectl commands.`;
+interface CheckResult {
+  description: string;
+  passed: boolean;
 }
 
-export default function LabView({ labConfig, lessonContent, onComplete }: Props) {
-  const [started, setStarted] = useState(false);
+const LINE_COLORS: Record<TerminalLine["type"], string> = {
+  input: "text-accent-green",
+  error: "text-accent-red",
+  system: "text-accent-cyan",
+  output: "text-gray-300",
+};
+
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+export default function LabView({ labConfigId, hints, timeLimit, instructions, background, continueHref }: Props) {
+  const router = useRouter();
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [timeLeft, setTimeLeft] = useState(timeLimit * 60);
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [input, setInput] = useState("");
-  const [commands, setCommands] = useState<string[]>([]);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIdx, setHistoryIdx] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [ended, setEnded] = useState(false);
+  const [checks, setChecks] = useState<CheckResult[]>([]);
+  const [passed, setPassed] = useState(false);
   const [showHints, setShowHints] = useState(false);
   const [currentHint, setCurrentHint] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(labConfig.timeLimit * 60);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState("");
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const hints: string[] = useMemo(
-    () => JSON.parse(labConfig.hints),
-    [labConfig.hints]
-  );
-
   useEffect(() => {
-    if (!started) return;
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 0) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    if (expiresAt === null) return;
+    const tick = () => setTimeLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [started]);
+  }, [expiresAt]);
 
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [lines]);
+    terminalRef.current?.scrollTo({ top: terminalRef.current.scrollHeight });
+  }, [lines, busy]);
+
+  const append = (...newLines: TerminalLine[]) => setLines((prev) => [...prev, ...newLines]);
 
   const handleStart = async () => {
-    setStarting(true);
-    const res = await fetch(`/api/labs/${labConfig.id}/start`, {
-      method: "POST",
-    });
-    setStarting(false);
+    setBusy(true);
+    setStartError("");
+    const res = await fetch(`/api/labs/${labConfigId}/start`, { method: "POST" });
+    const data = await res.json();
+    setBusy(false);
 
     if (res.ok === false) {
-      setLines([{ type: "error", content: "Could not start the lab. Please sign in and try again." }]);
+      setStartError(data.error);
       return;
     }
 
-    const labSession: { id: string } = await res.json();
-    setSessionId(labSession.id);
-    setStarted(true);
+    setSessionId(data.id);
+    setExpiresAt(new Date(data.expiresAt).getTime());
+    setHistory(data.commands);
+    setEnded(false);
+    setChecks([]);
     setLines([
-      {
-        type: "system",
-        content:
-          "Welcome to the KubeLearn Lab Environment!",
-      },
-      {
-        type: "system",
-        content: "Kubernetes cluster is ready. Type kubectl commands to practice.",
-      },
-      { type: "system", content: "Type 'help' for available commands.\n" },
+      { type: "system", content: "Welcome to the KubeLearn lab cluster (3 nodes, Kubernetes v1.30)." },
+      data.commands.length > 0
+        ? { type: "system", content: `Resumed your session: ${data.commands.length} commands already run.` }
+        : { type: "system", content: "Type kubectl commands to complete the tasks. Type 'help' for tips." },
     ]);
   };
 
-  const handleCommand = (e: React.FormEvent) => {
+  const handleCommand = async (e: FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
-
-    const cmd = input.trim();
-    setCommands((prev) => [...prev, cmd]);
-
-    const response = getCommandResponse(cmd);
-
-    if (response === "__CLEAR__") {
-      setLines([]);
-    } else {
-      setLines((prev) => [
-        ...prev,
-        { type: "input", content: `$ ${cmd}` },
-        {
-          type: response.includes("command not found") ? "error" : "output",
-          content: response,
-        },
-      ]);
-    }
+    const command = input.trim();
+    if (command === "" || sessionId === null || busy) return;
 
     setInput("");
+    setHistoryIdx(null);
+
+    if (command === "clear") {
+      setLines([]);
+      return;
+    }
+    if (command === "help") {
+      append(
+        { type: "input", content: `$ ${command}` },
+        {
+          type: "system",
+          content:
+            "Commands run against a simulated cluster: get, describe, run, create, expose, scale, set image,\nrollout, label, delete, cordon, uncordon, drain, taint, logs, auth can-i, config.\nUse 'clear' to clear the screen and the Validate button when you're done.",
+        }
+      );
+      return;
+    }
+
+    setHistory((prev) => [...prev, command]);
+    append({ type: "input", content: `$ ${command}` });
+    setBusy(true);
+
+    const res = await fetch(`/api/lab-sessions/${sessionId}/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command }),
+    });
+    const data = await res.json();
+    setBusy(false);
+
+    if (res.status === 410) setEnded(true);
+    if (res.ok === false) {
+      append({ type: "error", content: data.error });
+      return;
+    }
+    append({ type: data.isError ? "error" : "output", content: data.output });
+  };
+
+  // Up/down arrows walk through previous commands like a real shell
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (history.length === 0 || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+
+    const last = history.length - 1;
+    const next =
+      e.key === "ArrowUp"
+        ? Math.max(0, (historyIdx ?? history.length) - 1)
+        : historyIdx === null || historyIdx >= last
+          ? null
+          : historyIdx + 1;
+
+    setHistoryIdx(next);
+    setInput(next === null ? "" : history[next]);
   };
 
   const handleValidate = async () => {
-    const res = await fetch(`/api/labs/${labConfig.id}/validate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId,
-        commands,
-      }),
-    });
-
+    if (sessionId === null) return;
+    setBusy(true);
+    const res = await fetch(`/api/lab-sessions/${sessionId}/validate`, { method: "POST" });
     const data = await res.json();
+    setBusy(false);
 
+    if (res.status === 410) setEnded(true);
     if (res.ok === false) {
-      setLines((prev) => [...prev, { type: "error", content: data.error }]);
+      append({ type: "error", content: data.error });
       return;
     }
 
-    setLines((prev) => [
-      ...prev,
-      { type: "system", content: "\n--- Lab Validation ---" },
-      {
-        type: data.passed ? "system" : "error",
-        content: data.message,
-      },
-      {
-        type: "system",
-        content: `Steps completed: ${data.completedSteps}/${data.totalSteps}`,
-      },
-    ]);
-
+    setChecks(data.checks);
     if (data.passed) {
-      onComplete();
+      setPassed(true);
+      router.refresh();
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
-
-  if (!started) {
+  if (sessionId === null) {
     return (
       <div className="space-y-6 mb-8">
-        {/* Instructions */}
         <div className="glass-card p-8">
           <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
             <TermIcon size={20} className="text-accent-green" />
             Lab Instructions
           </h2>
-          <MarkdownRenderer content={labConfig.instructions} />
+          {instructions}
         </div>
 
-        {/* Context */}
-        {lessonContent && (
+        {background && (
           <div className="glass-card p-8">
             <h2 className="text-xl font-bold text-white mb-4">Background</h2>
-            <MarkdownRenderer content={lessonContent} />
+            {background}
           </div>
         )}
 
         <div className="text-center">
           <button
             onClick={handleStart}
-            disabled={starting}
+            disabled={busy}
             className="btn-primary flex items-center gap-2 mx-auto text-lg px-8 py-4"
           >
             <Play size={20} />
-            {starting ? "Starting..." : "Start Lab"}
+            {busy ? "Starting..." : "Start Lab"}
           </button>
-          {lines.map((line, i) => (
-            <p key={i} className="text-sm text-accent-red mt-2">
-              {line.content}
-            </p>
-          ))}
-          <p className="text-sm text-kube-400 mt-2">
-            Time limit: {labConfig.timeLimit} minutes
-          </p>
+          <p className="text-sm text-kube-400 mt-2">Time limit: {timeLimit} minutes</p>
+          {startError && <p className="text-sm text-accent-red mt-2">{startError}</p>}
         </div>
       </div>
     );
   }
 
+  if (passed) {
+    return (
+      <div className="glass-card p-8 text-center mb-8">
+        <CheckCircle2 size={64} className="mx-auto text-accent-green mb-4" />
+        <h2 className="text-3xl font-bold text-white mb-2">Lab complete!</h2>
+        <p className="text-kube-400 mb-6">Every task checked out against the cluster state.</p>
+        <Link href={continueHref} className="btn-primary inline-flex items-center gap-2">
+          Continue
+          <ChevronRight size={16} />
+        </Link>
+      </div>
+    );
+  }
+
+  const timerStyle =
+    timeLeft < 60
+      ? "bg-accent-red/20 text-accent-red"
+      : timeLeft < 300
+        ? "bg-accent-yellow/20 text-accent-yellow"
+        : "bg-kube-800 text-kube-300";
+
   return (
     <div className="space-y-4 mb-8">
-      {/* Timer and controls */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-4">
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${
-              timeLeft < 60
-                ? "bg-accent-red/20 text-accent-red"
-                : timeLeft < 300
-                ? "bg-accent-yellow/20 text-accent-yellow"
-                : "bg-kube-800 text-kube-300"
-            }`}
-          >
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${timerStyle}`}>
             <Clock size={16} />
-            <span className="font-mono font-semibold">
-              {formatTime(timeLeft)}
-            </span>
+            <span className="font-mono font-semibold">{formatTime(timeLeft)}</span>
           </div>
-          <span className="text-sm text-kube-400">
-            {commands.length} commands executed
-          </span>
+          <span className="text-sm text-kube-400">{history.length} commands run</span>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowHints(!showHints)}
-            className="btn-ghost flex items-center gap-1 text-accent-yellow"
-          >
-            <Lightbulb size={16} />
-            Hints
-          </button>
-          <button
-            onClick={handleValidate}
-            className="btn-primary flex items-center gap-2"
-          >
+          {hints.length > 0 && (
+            <button onClick={() => setShowHints(!showHints)} className="btn-ghost flex items-center gap-1 text-accent-yellow">
+              <Lightbulb size={16} />
+              Hints
+            </button>
+          )}
+          <button onClick={handleValidate} disabled={busy || ended} className="btn-primary flex items-center gap-2 disabled:opacity-50">
             <CheckCircle2 size={16} />
             Validate
           </button>
         </div>
       </div>
 
-      {/* Hints */}
       {showHints && (
         <div className="glass-card p-4">
           <div className="flex items-center justify-between mb-3">
@@ -332,20 +274,14 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
             </h3>
             <div className="flex gap-2">
               <button
-                onClick={() =>
-                  setCurrentHint(Math.max(0, currentHint - 1))
-                }
+                onClick={() => setCurrentHint(Math.max(0, currentHint - 1))}
                 disabled={currentHint === 0}
                 className="btn-ghost text-xs disabled:opacity-30"
               >
                 Prev
               </button>
               <button
-                onClick={() =>
-                  setCurrentHint(
-                    Math.min(hints.length - 1, currentHint + 1)
-                  )
-                }
+                onClick={() => setCurrentHint(Math.min(hints.length - 1, currentHint + 1))}
                 disabled={currentHint === hints.length - 1}
                 className="btn-ghost text-xs disabled:opacity-30"
               >
@@ -353,21 +289,35 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
               </button>
             </div>
           </div>
-          <p className="text-sm text-kube-300">{hints[currentHint]}</p>
+          <p className="text-sm text-kube-300 font-mono">{hints[currentHint]}</p>
         </div>
       )}
 
-      {/* Instructions (collapsible) */}
+      {checks.length > 0 && (
+        <div className="glass-card p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-white">
+            {checks.filter((c) => c.passed).length}/{checks.length} tasks complete
+          </h3>
+          {checks.map((check) => (
+            <div key={check.description} className="flex items-center gap-2 text-sm">
+              {check.passed ? (
+                <CheckCircle2 size={16} className="text-accent-green shrink-0" />
+              ) : (
+                <Circle size={16} className="text-kube-600 shrink-0" />
+              )}
+              <span className={check.passed ? "text-kube-300" : "text-white"}>{check.description}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <details className="glass-card overflow-hidden">
         <summary className="p-4 cursor-pointer text-sm text-kube-400 hover:text-kube-300 transition">
           View Lab Instructions
         </summary>
-        <div className="px-4 pb-4">
-          <MarkdownRenderer content={labConfig.instructions} />
-        </div>
+        <div className="px-4 pb-4">{instructions}</div>
       </details>
 
-      {/* Terminal */}
       <div className="terminal-container">
         <div className="flex items-center gap-2 px-4 py-2 bg-kube-900 border-b border-kube-700">
           <div className="flex gap-1.5">
@@ -375,9 +325,7 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
             <div className="w-3 h-3 rounded-full bg-accent-yellow/80" />
             <div className="w-3 h-3 rounded-full bg-accent-green/80" />
           </div>
-          <span className="text-xs text-kube-500 ml-2">
-            kubelearn-lab ~ kubectl
-          </span>
+          <span className="text-xs text-kube-500 ml-2">kubelearn-lab ~ kubectl</span>
         </div>
 
         <div
@@ -386,42 +334,43 @@ export default function LabView({ labConfig, lessonContent, onComplete }: Props)
           onClick={() => inputRef.current?.focus()}
         >
           {lines.map((line, i) => (
-            <div
-              key={i}
-              className={`mb-1 whitespace-pre-wrap ${
-                line.type === "input"
-                  ? "text-accent-green"
-                  : line.type === "error"
-                  ? "text-accent-red"
-                  : line.type === "system"
-                  ? "text-accent-cyan"
-                  : "text-gray-300"
-              }`}
-            >
+            <div key={i} className={`mb-1 whitespace-pre-wrap ${LINE_COLORS[line.type]}`}>
               {line.content}
             </div>
           ))}
 
-          {/* Input line */}
-          <form onSubmit={handleCommand} className="flex items-center gap-2">
-            <span className="text-accent-green">$</span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              className="flex-1 bg-transparent outline-none text-white caret-accent-green"
-              autoFocus
-              spellCheck={false}
-            />
-          </form>
+          {ended ? null : (
+            <form onSubmit={handleCommand} className="flex items-center gap-2">
+              <span className="text-accent-green">$</span>
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={busy}
+                maxLength={500}
+                className="flex-1 bg-transparent outline-none text-white caret-accent-green"
+                autoFocus
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="kubectl command"
+              />
+            </form>
+          )}
         </div>
       </div>
 
-      {timeLeft === 0 && (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-accent-red/10 border border-accent-red/30 text-accent-red text-sm">
-          <AlertTriangle size={16} />
-          Time&apos;s up! You can still validate your work.
+      {(ended || timeLeft === 0) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-accent-red/10 border border-accent-red/30 text-accent-red text-sm">
+          <span className="flex items-center gap-2">
+            <AlertTriangle size={16} />
+            Time&apos;s up for this session.
+          </span>
+          <button onClick={handleStart} className="btn-secondary flex items-center gap-2 text-sm">
+            <RotateCcw size={14} />
+            Start a fresh cluster
+          </button>
         </div>
       )}
     </div>

@@ -1,20 +1,27 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { AchievementType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { awardXp } from "@/lib/gamification";
+import { getUserId, jsonError, parseBody } from "@/lib/http";
+import { isRateLimited } from "@/lib/rate-limit";
+import { awardXp } from "@/lib/gamification/xp";
+import { isCorrectAnswer } from "@/lib/learning/quiz";
+import { scheduleReview } from "@/lib/learning/review";
+import { answerSchema } from "@/lib/validation/quiz";
 
 export async function POST(
   request: Request,
   { params }: { params: { questionId: string } }
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = await getUserId();
+  if (userId === null) return jsonError("Unauthorized", 401);
+
+  if (await isRateLimited(`quiz:${userId}`, 60, 60)) {
+    return jsonError("Slow down a little", 429);
   }
 
-  const userId = session.user.id;
-  const { answer } = await request.json();
+  const parsed = await parseBody(request, answerSchema);
+  if (parsed.error) return parsed.error;
+  const { answer } = parsed.data;
 
   const [question, previousCorrect] = await Promise.all([
     prisma.quizQuestion.findUnique({
@@ -26,40 +33,26 @@ export async function POST(
       select: { id: true },
     }),
   ]);
+  if (question === null) return jsonError("Question not found", 404);
 
-  if (!question) {
-    return NextResponse.json(
-      { error: "Question not found" },
-      { status: 404 }
-    );
-  }
-
-  const correctAnswer = JSON.parse(question.correctAnswer);
-  const serializedAnswer = JSON.stringify(answer);
-  const isCorrect = serializedAnswer === JSON.stringify(correctAnswer);
-
+  const correct = isCorrectAnswer(question.correctAnswer, answer);
   // XP is granted only for the first correct answer to a question
-  const xpEarned = isCorrect && previousCorrect === null ? question.xpReward : 0;
+  const xpEarned = correct && previousCorrect === null ? question.xpReward : 0;
 
-  await Promise.all([
-    prisma.quizAttempt.create({
-      data: {
-        userId,
-        questionId: params.questionId,
-        answer: serializedAnswer,
-        correct: isCorrect,
-        xpEarned,
-      },
+  await prisma.$transaction(async (tx) => {
+    await tx.quizAttempt.create({
+      data: { userId, questionId: params.questionId, answer, correct, xpEarned },
       select: { id: true },
-    }),
-    xpEarned > 0
-      ? awardXp(userId, xpEarned, "quiz_correct", "Correctly answered quiz question")
-      : null,
-  ]);
+    });
+    await scheduleReview(tx, userId, params.questionId, correct);
+    if (xpEarned > 0) {
+      await awardXp(tx, userId, xpEarned, AchievementType.quiz_correct, "Correctly answered a quiz question");
+    }
+  });
 
   return NextResponse.json({
-    correct: isCorrect,
-    correctAnswer,
+    correct,
+    correctAnswer: question.correctAnswer as Prisma.JsonValue,
     explanation: question.explanation,
     xpEarned,
   });

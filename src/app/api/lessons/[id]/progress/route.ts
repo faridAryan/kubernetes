@@ -1,78 +1,51 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { awardXp } from "@/lib/gamification";
-
-const ALLOWED_STATUSES = ["not_started", "in_progress", "completed"];
+import { getUserId, jsonError, parseBody } from "@/lib/http";
+import { completeLesson } from "@/lib/learning/progress";
+import { getQuizScore } from "@/lib/learning/quiz";
+import { isLessonUnlocked } from "@/lib/learning/unlock";
+import { progressSchema } from "@/lib/validation/lesson";
 
 export async function POST(
   request: Request,
   { params }: { params: { id: string } }
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const userId = await getUserId();
+  if (userId === null) return jsonError("Unauthorized", 401);
 
-  const userId = session.user.id;
-  const { status, score } = await request.json();
+  const parsed = await parseBody(request, progressSchema);
+  if (parsed.error) return parsed.error;
 
-  if (ALLOWED_STATUSES.includes(status) === false) {
-    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
-  }
-
-  const [lesson, previous] = await Promise.all([
-    prisma.lesson.findUnique({
-      where: { id: params.id },
-      select: {
-        title: true,
-        xpReward: true,
-        module: { select: { certificationId: true } },
-      },
-    }),
-    prisma.lessonProgress.findUnique({
-      where: { userId_lessonId: { userId, lessonId: params.id } },
-      select: { status: true },
-    }),
-  ]);
-
-  if (!lesson) {
-    return NextResponse.json({ error: "Lesson not found" }, { status: 404 });
-  }
-
-  const isCompleted = status === "completed";
-  const data = {
-    status,
-    score: score ?? undefined,
-    completedAt: isCompleted ? new Date() : undefined,
-  };
-
-  const progress = await prisma.lessonProgress.upsert({
-    where: { userId_lessonId: { userId, lessonId: params.id } },
-    update: data,
-    create: { userId, lessonId: params.id, ...data },
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: params.id },
+    select: { type: true },
   });
+  if (lesson === null) return jsonError("Lesson not found", 404);
 
-  // Reward only the first completion so repeated submissions can't farm XP
-  const isFirstCompletion = isCompleted && previous?.status !== "completed";
-
-  if (isFirstCompletion) {
-    const certificationId = lesson.module.certificationId;
-
-    const [, totalLessons, completedLessons] = await Promise.all([
-      awardXp(userId, lesson.xpReward, "lesson_complete", `Completed lesson: ${lesson.title}`),
-      prisma.lesson.count({ where: { module: { certificationId } } }),
-      prisma.lessonProgress.count({
-        where: { userId, status: "completed", lesson: { module: { certificationId } } },
-      }),
-    ]);
-
-    await prisma.enrollment.updateMany({
-      where: { userId, certificationId },
-      data: { progress: Math.round((completedLessons / totalLessons) * 100) },
-    });
+  if (await isLessonUnlocked(userId, params.id) === false) {
+    return jsonError("Complete the previous module first", 403);
   }
 
-  return NextResponse.json(progress);
+  if (parsed.data.status === "in_progress") {
+    // Never downgrade a completed lesson
+    await prisma.lessonProgress.upsert({
+      where: { userId_lessonId: { userId, lessonId: params.id } },
+      update: {},
+      create: { userId, lessonId: params.id, status: "in_progress" },
+    });
+    return NextResponse.json({ status: "in_progress" });
+  }
+
+  // Labs complete only through server-side validation
+  if (lesson.type === "lab") return jsonError("Labs are completed by validating them", 400);
+
+  let score: number | undefined;
+  if (lesson.type === "quiz") {
+    const quiz = await getQuizScore(prisma, userId, params.id);
+    if (quiz.answeredAll === false) return jsonError("Answer every question first", 400);
+    score = quiz.score;
+  }
+
+  const result = await completeLesson(userId, params.id, score);
+  return NextResponse.json({ status: "completed", score, ...result });
 }
