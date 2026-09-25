@@ -1,4 +1,4 @@
-import { isImagePullable } from "./images";
+import { admitPods } from "./quota";
 import type {
   ClusterState,
   DeploymentResource,
@@ -27,14 +27,14 @@ function baseResources(createdAt: number): Resource[] {
     createdAt,
   });
 
-  const systemPod = (name: string, nodeName: string, owner: string | null = null): PodResource => ({
+  const systemPod = (name: string, nodeName: string, owner: string | null = null, labels: Labels = {}): PodResource => ({
     kind: "Pod",
     name,
     namespace: "kube-system",
     image: `registry.k8s.io/${name.split("-")[0]}:${K8S_VERSION}`,
     node: nodeName,
     owner,
-    labels: {},
+    labels,
     createdAt,
   });
 
@@ -43,13 +43,13 @@ function baseResources(createdAt: number): Resource[] {
     node("worker-1", "<none>"),
     node("worker-2", "<none>"),
     ...["default", "kube-system", "kube-public", "kube-node-lease"].map(
-      (name): Resource => ({ kind: "Namespace", name, labels: {}, createdAt })
+      (name): Resource => ({ kind: "Namespace", name, labels: namespaceLabels(name), createdAt })
     ),
     systemPod("etcd-control-plane", "control-plane"),
     systemPod("kube-apiserver-control-plane", "control-plane"),
     systemPod("kube-controller-manager-control-plane", "control-plane"),
     systemPod("kube-scheduler-control-plane", "control-plane"),
-    systemPod("coredns-7db6d8ff4d-x2k9p", "worker-1", "ReplicaSet"),
+    systemPod("coredns-7db6d8ff4d-x2k9p", "worker-1", "ReplicaSet", { "k8s-app": "kube-dns" }),
     systemPod("kube-proxy-4hf8s", "worker-1", "DaemonSet"),
     systemPod("kube-proxy-9zq2m", "worker-2", "DaemonSet"),
     {
@@ -65,7 +65,25 @@ function baseResources(createdAt: number): Resource[] {
       labels: { component: "apiserver" },
       createdAt,
     },
+    {
+      kind: "Service",
+      name: "kube-dns",
+      namespace: "kube-system",
+      type: "ClusterIP",
+      port: 53,
+      targetPort: 53,
+      nodePort: null,
+      selector: { "k8s-app": "kube-dns" },
+      clusterIP: "10.96.0.10",
+      labels: { "k8s-app": "kube-dns" },
+      createdAt,
+    },
   ];
+}
+
+// Kubernetes labels every namespace with its own name, which namespaceSelectors rely on
+export function namespaceLabels(name: string, labels: Labels = {}): Labels {
+  return { ...labels, "kubernetes.io/metadata.name": name };
 }
 
 const resourceKey = (r: Resource) => `${r.kind}/${"namespace" in r ? r.namespace : ""}/${r.name}`;
@@ -74,7 +92,11 @@ const resourceKey = (r: Resource) => `${r.kind}/${"namespace" in r ? r.namespace
 // A seed with the same kind/namespace/name replaces the base resource (e.g. a cordoned node).
 export function createInitialState(seeds: ResourceSeed[]): ClusterState {
   const createdAt = Date.now() - 5 * DAY_MS;
-  const extra = seeds.map((seed) => ({ labels: {}, ...seed, createdAt }) as Resource);
+  const extra = seeds.map((seed) => {
+    const resource = { labels: {}, ...seed, createdAt } as Resource;
+    if (resource.kind === "Namespace") resource.labels = namespaceLabels(resource.name, resource.labels);
+    return resource;
+  });
   const overridden = new Set(extra.map(resourceKey));
   const base = baseResources(createdAt).filter((r) => overridden.has(resourceKey(r)) === false);
   return { resources: [...base, ...extra], nextId: 1 };
@@ -121,7 +143,8 @@ function shortHash(text: string, length: number): string {
 // reschedule automatically after drains and change name when the image changes
 function deploymentPods(state: ClusterState, deployment: DeploymentResource): PodResource[] {
   const nodes = schedulableNodes(state);
-  const seed = `${deployment.name}:${deployment.image}`;
+  const { env, envFrom, requiredEnv, resources, memoryUsage } = deployment;
+  const seed = `${deployment.name}:${deployment.image}:${JSON.stringify([env, envFrom, resources])}`;
   const template = `${shortHash(seed, 5)}${shortHash(`${seed}#`, 5)}`;
 
   return Array.from({ length: deployment.replicas }, (_, i) => ({
@@ -133,10 +156,16 @@ function deploymentPods(state: ClusterState, deployment: DeploymentResource): Po
     owner: "ReplicaSet",
     labels: { ...deployment.labels },
     createdAt: deployment.createdAt,
+    env,
+    envFrom,
+    requiredEnv,
+    resources,
+    memoryUsage,
   }));
 }
 
-export function listPods(state: ClusterState): PodResource[] {
+// Every pod the controllers want to exist, before quota admission
+export function podCandidates(state: ClusterState): PodResource[] {
   const standalone = state.resources.filter((r): r is PodResource => r.kind === "Pod");
   const managed = state.resources
     .filter((r): r is DeploymentResource => r.kind === "Deployment")
@@ -144,11 +173,7 @@ export function listPods(state: ClusterState): PodResource[] {
   return [...standalone, ...managed];
 }
 
-export function podStatus(pod: PodResource): "Pending" | "ImagePullBackOff" | "Running" {
-  if (pod.node === null) return "Pending";
-  return isImagePullable(pod.image) ? "Running" : "ImagePullBackOff";
-}
-
-export function isRunning(pod: PodResource): boolean {
-  return podStatus(pod) === "Running";
+// Pods that actually exist: deployment pods over a ResourceQuota are never created
+export function listPods(state: ClusterState): PodResource[] {
+  return admitPods(state, podCandidates(state)).admitted;
 }

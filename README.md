@@ -2,8 +2,14 @@
 
 A gamified platform for learning Kubernetes and preparing for the KCNA, CKA, CKAD and CKS certifications.
 
-- **4 learning paths, 52 lessons**: readings, quizzes and 20 hands-on labs, including troubleshooting scenarios
-- **Hands-on labs**: a simulated 3-node cluster runs on the server. `kubectl` commands change its state and validation checks the result, so only real solutions pass.
+- **4 learning paths, 61 lessons**: readings, quizzes and 27 hands-on labs, including troubleshooting, NetworkPolicy and quota scenarios
+- **Hands-on labs**: a simulated 3-node cluster runs on the server. `kubectl` commands change its state and validation checks the result, so only real solutions pass. The simulator covers:
+  - scheduling, taints and drains
+  - image pull errors, CrashLoopBackOff (missing env or ConfigMap) and OOMKilled
+  - ResourceQuota admission
+  - RBAC
+  - NetworkPolicies, including DNS egress, tested with `kubectl exec -- curl/wget/nc/nslookup`
+  - YAML manifests written in an in-lab editor and applied with `kubectl apply -f`
 - **Timed mock exams** drawn from each path's question bank
 - **Spaced-repetition review** of questions you answered wrong
 - **XP, levels, streaks, badges, leaderboard and verifiable certificates**
@@ -92,7 +98,10 @@ Lab checks can require:
 | `absent` | a resource is gone |
 | `pods` | enough Pods matching a selector are Running (optionally not on a given node) |
 | `endpoints` | a Service has at least N ready endpoints |
+| `connectivity` | a client Pod can (or can't) open a connection to `host:port` through Services, DNS and NetworkPolicies |
 | `can-i` | an RBAC question (`kubectl auth can-i`) has the expected answer |
+
+Lab resources can describe container behaviour: `envFrom`, `env`, `requiredEnv` (the app crashes without these variables), `resources` and `memoryUsage` (above the limit it gets OOMKilled).
 
 Troubleshooting labs start from a broken `initialState`. A seed with the same kind and name as a base resource (for example, a cordoned `worker-1` Node) replaces it.
 

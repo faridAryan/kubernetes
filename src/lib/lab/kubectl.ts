@@ -1,11 +1,15 @@
 import {
   CLUSTER_SCOPED,
   findResource,
-  isRunning,
   listPods,
   matchesSelector,
+  namespaceLabels,
   schedulableNodes,
 } from "./cluster";
+import { applyFile, deleteFile } from "./apply";
+import { crashReason, podStatus } from "./container";
+import { admissionError } from "./quota";
+import { createQuota, execCommand, setEnv, setResources } from "./workload-commands";
 import {
   KubectlError,
   getFlag,
@@ -17,6 +21,23 @@ import {
   tokenize,
   type ParsedArgs,
 } from "./parser";
+import {
+  addResource,
+  commaList,
+  findPod,
+  getExisting,
+  resolvePod,
+  literals,
+  nextId,
+  notFound,
+  requireFlag,
+  requireName,
+  requireNamespace,
+  resolveKind,
+  resolveTarget,
+  type Context,
+} from "./context";
+import { isRunning } from "./container";
 import { serviceEndpoints, warningEvents } from "./diagnostics";
 import { KIND_PLURAL, KIND_PREFIX, age, describe, printTable, table } from "./printers";
 import { canI, subjectFromAs } from "./rbac";
@@ -30,110 +51,12 @@ import type {
   ServiceResource,
 } from "./types";
 
-const KIND_ALIASES: Record<string, Kind> = {
-  node: "Node", nodes: "Node", no: "Node",
-  namespace: "Namespace", namespaces: "Namespace", ns: "Namespace",
-  pod: "Pod", pods: "Pod", po: "Pod",
-  deployment: "Deployment", deployments: "Deployment", deploy: "Deployment",
-  service: "Service", services: "Service", svc: "Service",
-  configmap: "ConfigMap", configmaps: "ConfigMap", cm: "ConfigMap",
-  secret: "Secret", secrets: "Secret",
-  serviceaccount: "ServiceAccount", serviceaccounts: "ServiceAccount", sa: "ServiceAccount",
-  role: "Role", roles: "Role",
-  rolebinding: "RoleBinding", rolebindings: "RoleBinding",
-};
-
 const PROTECTED_NAMESPACES = ["default", "kube-system", "kube-public", "kube-node-lease"];
-
-interface Context {
-  state: ClusterState;
-  args: string[];
-  parsed: ParsedArgs;
-  namespace: string;
-}
 
 export interface ExecResult {
   output: string;
   isError: boolean;
   state: ClusterState;
-}
-
-// ---------- helpers ----------
-
-function resolveKind(word: string | undefined): Kind {
-  const kind = word ? KIND_ALIASES[word.toLowerCase().split(".")[0]] : undefined;
-  if (kind === undefined) {
-    throw new KubectlError(`error: the server doesn't have a resource type "${word ?? ""}"`);
-  }
-  return kind;
-}
-
-// Accepts both "deployment nginx" and "deployment/nginx"
-function resolveTarget(args: string[]): { kind: Kind; name: string; rest: string[] } {
-  const [first = "", second, ...others] = args;
-  if (first.includes("/")) {
-    const [kind, name] = first.split("/");
-    return { kind: resolveKind(kind), name, rest: args.slice(1) };
-  }
-  if (second === undefined) throw new KubectlError("error: resource name may not be empty");
-  return { kind: resolveKind(first), name: second, rest: others };
-}
-
-function notFound(kind: Kind, name: string): KubectlError {
-  return new KubectlError(`Error from server (NotFound): ${KIND_PLURAL[kind]} "${name}" not found`);
-}
-
-function requireNamespace(state: ClusterState, namespace: string) {
-  if (findResource(state, "Namespace", namespace) === undefined) throw notFound("Namespace", namespace);
-}
-
-function requireFlag(parsed: ParsedArgs, flag: string): string {
-  const value = getFlag(parsed, flag);
-  if (value === undefined || value === "") {
-    throw new KubectlError(`error: required flag(s) "${flag.replace(/^--/, "")}" not set`);
-  }
-  return value;
-}
-
-function requireName(name: string | undefined, what: string): string {
-  if (name === undefined) throw new KubectlError(`error: exactly one NAME is required for ${what}`);
-  return name;
-}
-
-function addResource(state: ClusterState, resource: Resource) {
-  const namespace = "namespace" in resource ? resource.namespace : undefined;
-  if (findResource(state, resource.kind, resource.name, namespace)) {
-    throw new KubectlError(
-      `Error from server (AlreadyExists): ${KIND_PLURAL[resource.kind]} "${resource.name}" already exists`
-    );
-  }
-  state.resources.push(resource);
-}
-
-function getExisting<K extends Kind>(ctx: Context, kind: K, name: string) {
-  const namespace = CLUSTER_SCOPED.includes(kind) ? undefined : ctx.namespace;
-  const resource = findResource(ctx.state, kind, name, namespace);
-  if (resource === undefined) throw notFound(kind, name);
-  return resource;
-}
-
-function findPod(ctx: Context, name: string): PodResource {
-  const pod = listPods(ctx.state).find((p) => p.name === name && p.namespace === ctx.namespace);
-  if (pod === undefined) throw notFound("Pod", name);
-  return pod;
-}
-
-function nextId(state: ClusterState): number {
-  state.nextId += 1;
-  return state.nextId;
-}
-
-function literals(parsed: ParsedArgs): Record<string, string> {
-  return parseLabels(getFlags(parsed, "--from-literal").join(","));
-}
-
-function commaList(parsed: ParsedArgs, flag: string): string[] {
-  return getFlags(parsed, flag).flatMap((value) => value.split(",")).filter(Boolean);
 }
 
 // ---------- commands ----------
@@ -265,7 +188,8 @@ function run(ctx: Context): string {
 
   const nodes = schedulableNodes(ctx.state);
   const id = nextId(ctx.state);
-  addResource(ctx.state, {
+  const env = parseLabels(getFlags(ctx.parsed, "--env").join(","));
+  const pod: PodResource = {
     kind: "Pod",
     name,
     namespace: ctx.namespace,
@@ -274,20 +198,28 @@ function run(ctx: Context): string {
     owner: null,
     labels: getFlag(ctx.parsed, "--labels") ? parseLabels(getFlag(ctx.parsed, "--labels") ?? "") : { run: name },
     createdAt: Date.now(),
-  });
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  };
+
+  // The API server applies ResourceQuotas when the pod is created
+  const quotaError = admissionError(ctx.state, listPods(ctx.state), { ...pod, owner: "ReplicaSet" });
+  if (quotaError) throw new KubectlError(`Error from server (Forbidden): ${quotaError}`);
+
+  addResource(ctx.state, pod);
   return `pod/${name} created`;
 }
 
 function create(ctx: Context): string {
   const { state, parsed, namespace } = ctx;
   const [type, ...rest] = ctx.args;
+  if (hasFlag(parsed, "--filename")) return applyFile(ctx, "create");
   const base = { labels: {}, createdAt: Date.now() };
 
   switch (type) {
     case "namespace":
     case "ns": {
       const name = requireName(rest[0], "create namespace");
-      addResource(state, { kind: "Namespace", name, ...base });
+      addResource(state, { kind: "Namespace", name, ...base, labels: namespaceLabels(name) });
       return `namespace/${name} created`;
     }
     case "deployment":
@@ -328,6 +260,9 @@ function create(ctx: Context): string {
       addResource(state, { kind: "ServiceAccount", name, namespace, ...base });
       return `serviceaccount/${name} created`;
     }
+    case "quota":
+    case "resourcequota":
+      return createQuota(ctx, rest[0]);
     case "role": {
       const name = requireName(rest[0], "create role");
       const verbs = commaList(parsed, "--verb");
@@ -411,6 +346,8 @@ function setSelector(ctx: Context, args: string[]): string {
 function set(ctx: Context): string {
   const [sub, ...rest] = ctx.args;
   if (sub === "selector") return setSelector(ctx, rest);
+  if (sub === "env") return setEnv(ctx, rest);
+  if (sub === "resources") return setResources(ctx, rest);
   if (sub !== "image") throw new KubectlError(`error: unknown command "set ${sub ?? ""}"`);
 
   const { kind, name, rest: assignments } = resolveTarget(rest);
@@ -497,6 +434,7 @@ function label(ctx: Context): string {
 }
 
 function deleteCommand(ctx: Context): string {
+  if (hasFlag(ctx.parsed, "--filename")) return deleteFile(ctx);
   const { kind, name, rest } = resolveTarget(ctx.args);
   const names = [name, ...rest];
 
@@ -607,16 +545,17 @@ function taint(ctx: Context): string {
 }
 
 function logs(ctx: Context): string {
-  const target = ctx.args[0]?.replace(/^(pod|pods|po)\//, "");
-  const pod = findPod(ctx, requireName(target, "logs"));
-  if (pod.node === null) {
-    throw new KubectlError(`Error from server (BadRequest): container "${pod.name}" in pod "${pod.name}" is waiting to start: ContainerCreating`);
-  }
-  if (isRunning(pod) === false) {
-    throw new KubectlError(
-      `Error from server (BadRequest): container "${pod.name}" in pod "${pod.name}" is waiting to start: trying and failing to pull image`
-    );
-  }
+  const pod = resolvePod(ctx, requireName(ctx.args[0], "logs"));
+  const status = podStatus(ctx.state, pod);
+  const waiting = (reason: string) =>
+    new KubectlError(`Error from server (BadRequest): container "app" in pod "${pod.name}" is waiting to start: ${reason}`);
+
+  if (status === "Pending") throw waiting("ContainerCreating");
+  if (status === "ImagePullBackOff") throw waiting("trying and failing to pull image");
+  if (status === "CreateContainerConfigError") throw waiting("CreateContainerConfigError");
+  // A crashing container still has the output of its last attempt
+  if (status === "CrashLoopBackOff") return crashReason(ctx.state, pod)?.log ?? "";
+
   if (pod.image.startsWith("nginx")) {
     return "/docker-entrypoint.sh: Configuration complete; ready for start up\n2024/06/01 10:00:00 [notice] 1#1: nginx started";
   }
@@ -667,16 +606,48 @@ const HANDLERS: Record<string, (ctx: Context) => string> = {
   logs,
   auth,
   config,
+  exec: execCommand,
+  apply: (ctx) => applyFile(ctx, "apply"),
 };
+
+// Tiny shell so "ls" / "cat" work on files saved from the manifest editor
+function shellBuiltin(state: ClusterState, program: string, args: string[]): ExecResult | null {
+  const files = state.files ?? {};
+  switch (program) {
+    case "ls": {
+      const names = Object.keys(files).sort();
+      return { output: names.join("  "), isError: false, state };
+    }
+    case "cat": {
+      const missing = args.find((file) => files[file] === undefined);
+      if (missing || args.length === 0) {
+        return { output: `cat: ${missing ?? ""}: No such file or directory`, isError: true, state };
+      }
+      return { output: args.map((file) => files[file]).join("\n"), isError: false, state };
+    }
+    case "vi":
+    case "vim":
+    case "nano":
+      return { output: "Use the manifest editor above the terminal to write files, then kubectl apply -f <file>.", isError: false, state };
+    default:
+      return null;
+  }
+}
 
 // Runs one kubectl command against a copy of the state; the original is untouched on error
 export function executeCommand(input: ClusterState, command: string): ExecResult {
   const tokens = tokenize(command);
-  const [program, ...rest] = tokens;
+  // Everything after "--" belongs to the container (kubectl exec pod -- wget ...)
+  const separator = tokens.indexOf("--");
+  const [program, ...rest] = separator === -1 ? tokens : tokens.slice(0, separator);
+  const containerArgs = separator === -1 ? [] : tokens.slice(separator + 1);
+
+  const builtin = program ? shellBuiltin(input, program, rest) : null;
+  if (builtin) return builtin;
 
   if (program !== "kubectl" && program !== "k") {
     return {
-      output: `bash: ${program}: command not found\nHint: this lab simulates kubectl commands only.`,
+      output: `bash: ${program}: command not found\nHint: this lab simulates kubectl plus ls and cat.`,
       isError: true,
       state: input,
     };
@@ -699,7 +670,7 @@ export function executeCommand(input: ClusterState, command: string): ExecResult
   const state = structuredClone(input);
   try {
     const namespace = getFlag(parsed, "--namespace") ?? "default";
-    return { output: handler({ state, args, parsed, namespace }), isError: false, state };
+    return { output: handler({ state, args, parsed, namespace, containerArgs }), isError: false, state };
   } catch (error) {
     if (error instanceof KubectlError) return { output: error.message, isError: true, state: input };
     throw error;

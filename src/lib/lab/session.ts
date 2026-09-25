@@ -17,7 +17,7 @@ const fail = (error: string, status: number) => ({ ok: false, error, status }) a
 export async function startLab(
   userId: string,
   labConfigId: string
-): Promise<LabResult<{ id: string; expiresAt: Date; commands: string[] }>> {
+): Promise<LabResult<{ id: string; expiresAt: Date; commands: string[]; files: Record<string, string> }>> {
   const labConfig = await prisma.labConfig.findUnique({
     where: { id: labConfigId },
     select: { lessonId: true, initialState: true, timeLimit: true },
@@ -27,13 +27,18 @@ export async function startLab(
   const unlocked = await isLessonUnlocked(userId, labConfig.lessonId);
   if (unlocked === false) return fail("Complete the previous module first", 403);
 
-  const select = { id: true, expiresAt: true, commands: true } as const;
+  const select = { id: true, expiresAt: true, commands: true, state: true } as const;
+  // Only the saved manifests go back to the browser, never the cluster state itself
+  const toClient = ({ state, ...session }: { id: string; expiresAt: Date; commands: string[]; state: Prisma.JsonValue }) => ({
+    ...session,
+    files: (state as unknown as ClusterState).files ?? {},
+  });
   const active = await prisma.labSession.findFirst({
     where: { userId, labConfigId, status: "active", expiresAt: { gt: new Date() } },
     orderBy: { startedAt: "desc" },
     select,
   });
-  if (active) return { ok: true, value: active };
+  if (active) return { ok: true, value: toClient(active) };
 
   const session = await prisma.labSession.create({
     data: {
@@ -44,7 +49,7 @@ export async function startLab(
     },
     select,
   });
-  return { ok: true, value: session };
+  return { ok: true, value: toClient(session) };
 }
 
 async function getActiveSession(userId: string, sessionId: string) {
@@ -68,11 +73,14 @@ async function getActiveSession(userId: string, sessionId: string) {
   return { ok: true, value: session } as const;
 }
 
+const MAX_FILES = 20;
+
 export async function runLabCommand(
   userId: string,
   sessionId: string,
-  command: string
-): Promise<LabResult<{ output: string; isError: boolean }>> {
+  command: string,
+  files: Record<string, string> = {}
+): Promise<LabResult<{ output: string; isError: boolean; files: string[] }>> {
   const result = await getActiveSession(userId, sessionId);
   if (result.ok === false) return result;
 
@@ -80,7 +88,12 @@ export async function runLabCommand(
     return fail("Command limit reached for this session", 429);
   }
 
-  const exec = executeCommand(result.value.state as unknown as ClusterState, command);
+  // Save editor files into the session's virtual filesystem before running the command
+  const current = result.value.state as unknown as ClusterState;
+  const mergedFiles = { ...(current.files ?? {}), ...files };
+  if (Object.keys(mergedFiles).length > MAX_FILES) return fail(`A lab session can hold at most ${MAX_FILES} files`, 400);
+
+  const exec = executeCommand({ ...current, files: mergedFiles }, command);
   await prisma.labSession.update({
     where: { id: sessionId },
     data: {
@@ -89,7 +102,7 @@ export async function runLabCommand(
     },
   });
 
-  return { ok: true, value: { output: exec.output, isError: exec.isError } };
+  return { ok: true, value: { output: exec.output, isError: exec.isError, files: Object.keys(mergedFiles) } };
 }
 
 export async function validateLab(

@@ -1,4 +1,6 @@
-import { CLUSTER_SCOPED, findResource, isRunning, listPods, matchesSelector } from "./cluster";
+import { CLUSTER_SCOPED, findResource, listPods, matchesSelector } from "./cluster";
+import { isRunning } from "./container";
+import { connect } from "./network";
 import { serviceEndpoints } from "./diagnostics";
 import { canI, subjectFromAs } from "./rbac";
 import type { CheckResult, ClusterState, LabCheck } from "./types";
@@ -53,13 +55,21 @@ function evaluate(check: LabCheck, state: ClusterState, commands: string[]): boo
       const service = findResource(state, "Service", check.service, check.namespace);
       return service !== undefined && serviceEndpoints(state, service).length >= check.count;
     }
+    case "connectivity": {
+      // Same path as "kubectl exec <pod> -- nc -z host port" from the first healthy client pod
+      const client = listPods(state).find(
+        (p) => p.namespace === check.from.namespace && matchesSelector(p.labels, check.from.selector) && isRunning(state, p)
+      );
+      if (client === undefined) return false;
+      return (connect(state, client, check.host, check.port).status === "open") === check.allowed;
+    }
     case "can-i":
       return canI(state, subjectFromAs(check.as), check.verb, check.resource, check.namespace) === check.allowed;
     case "pods": {
       const pods = listPods(state).filter(
         (p) => p.namespace === check.namespace && matchesSelector(p.labels, check.selector)
       );
-      const running = pods.filter((p) => isRunning(p) && p.node !== check.notOnNode);
+      const running = pods.filter((p) => isRunning(state, p) && p.node !== check.notOnNode);
       return running.length >= check.running && running.length === pods.length;
     }
   }

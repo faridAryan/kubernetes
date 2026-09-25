@@ -14,6 +14,7 @@ import {
   ChevronRight,
   RotateCcw,
 } from "lucide-react";
+import ManifestEditor from "./ManifestEditor";
 
 interface Props {
   labConfigId: string;
@@ -63,6 +64,7 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
   const [showHints, setShowHints] = useState(false);
   const [currentHint, setCurrentHint] = useState(0);
   const [startError, setStartError] = useState("");
+  const [files, setFiles] = useState<Record<string, string>>({});
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -95,6 +97,7 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
     setSessionId(data.id);
     setExpiresAt(new Date(data.expiresAt).getTime());
     setHistory(data.commands);
+    setFiles(data.files ?? {});
     setEnded(false);
     setChecks([]);
     setLines([
@@ -103,6 +106,30 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
         ? { type: "system", content: `Resumed your session: ${data.commands.length} commands already run.` }
         : { type: "system", content: "Type kubectl commands to complete the tasks. Type 'help' for tips." },
     ]);
+  };
+
+  // Sends one command (and any editor files to save first) to the session's simulated cluster
+  const runCommand = async (command: string, filesToSave?: Record<string, string>) => {
+    if (sessionId === null) return;
+    setHistory((prev) => [...prev, command]);
+    append({ type: "input", content: `$ ${command}` });
+    setBusy(true);
+
+    const res = await fetch(`/api/lab-sessions/${sessionId}/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command, files: filesToSave }),
+    });
+    const data = await res.json();
+    setBusy(false);
+
+    if (res.status === 410) setEnded(true);
+    if (res.ok === false) {
+      append({ type: "error", content: data.error });
+      return;
+    }
+    if (filesToSave) setFiles((prev) => ({ ...prev, ...filesToSave }));
+    if (data.output) append({ type: data.isError ? "error" : "output", content: data.output });
   };
 
   const handleCommand = async (e: FormEvent) => {
@@ -123,31 +150,17 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
         {
           type: "system",
           content:
-            "Commands run against a simulated cluster: get (incl. events, endpoints), describe, run, create,\nexpose, scale, set image, set selector, rollout, label, delete, cordon, uncordon, drain, taint,\nlogs, auth can-i, config. Use 'clear' to clear the screen and Validate when you're done.",
+            "Commands run against a simulated cluster: get (incl. events, endpoints, netpol, quota), describe, run,\ncreate (incl. quota, -f), apply -f, delete, expose, scale, set image|env|resources|selector, rollout,\nlabel, logs [--previous], exec <pod> -- curl|wget|nc|nslookup|env, cordon, drain, taint, auth can-i.\nWrite YAML in the manifest editor; 'ls' and 'cat' show saved files. Validate when you're done.",
         }
       );
       return;
     }
 
-    setHistory((prev) => [...prev, command]);
-    append({ type: "input", content: `$ ${command}` });
-    setBusy(true);
-
-    const res = await fetch(`/api/lab-sessions/${sessionId}/exec`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command }),
-    });
-    const data = await res.json();
-    setBusy(false);
-
-    if (res.status === 410) setEnded(true);
-    if (res.ok === false) {
-      append({ type: "error", content: data.error });
-      return;
-    }
-    append({ type: data.isError ? "error" : "output", content: data.output });
+    await runCommand(command);
   };
+
+  const handleSaveFile = (name: string, content: string, apply: boolean) =>
+    runCommand(apply ? `kubectl apply -f ${name}` : "ls", { [name]: content });
 
   // Up/down arrows walk through previous commands like a real shell
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -317,6 +330,8 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
         </summary>
         <div className="px-4 pb-4">{instructions}</div>
       </details>
+
+      <ManifestEditor files={files} disabled={busy || ended} onSave={handleSaveFile} />
 
       <div className="terminal-container">
         <div className="flex items-center gap-2 px-4 py-2 bg-kube-900 border-b border-kube-700">

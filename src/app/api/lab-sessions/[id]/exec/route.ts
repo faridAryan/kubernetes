@@ -18,7 +18,7 @@ export async function POST(
   const parsed = await parseBody(request, execSchema);
   if (parsed.error) return parsed.error;
 
-  const result = await runLabCommand(userId, params.id, parsed.data.command);
+  const result = await runLabCommand(userId, params.id, parsed.data.command, parsed.data.files);
   if (result.ok === false) return jsonError(result.error, result.status);
 
   return NextResponse.json(result.value);

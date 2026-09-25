@@ -1,4 +1,6 @@
-import { listPods, matchesSelector, isRunning, podStatus } from "./cluster";
+import { listPods, matchesSelector, podCandidates } from "./cluster";
+import { crashReason, isRunning, missingConfigMaps, podStatus } from "./container";
+import { admitPods } from "./quota";
 import type { ClusterState, NodeResource, PodResource, ServiceResource } from "./types";
 
 const NODE_SUBNETS: Record<string, number> = { "control-plane": 0, "worker-1": 1, "worker-2": 2 };
@@ -21,7 +23,7 @@ export function serviceEndpoints(state: ClusterState, service: ServiceResource):
   const hasSelector = Object.keys(service.selector).length > 0;
   return listPods(state)
     .filter(
-      (p) => hasSelector && p.namespace === service.namespace && isRunning(p) && matchesSelector(p.labels, service.selector)
+      (p) => hasSelector && p.namespace === service.namespace && isRunning(state, p) && matchesSelector(p.labels, service.selector)
     )
     .map((p) => `${podIp(p)}:${service.targetPort}`);
 }
@@ -53,7 +55,7 @@ export interface PodEvent {
 }
 
 export function podEvents(state: ClusterState, pod: PodResource): PodEvent[] {
-  const status = podStatus(pod);
+  const status = podStatus(state, pod);
   if (status === "Pending") {
     return [{ type: "Warning", reason: "FailedScheduling", message: schedulingFailure(state) }];
   }
@@ -63,6 +65,25 @@ export function podEvents(state: ClusterState, pod: PodResource): PodEvent[] {
     reason: "Scheduled",
     message: `Successfully assigned ${pod.namespace}/${pod.name} to ${pod.node}`,
   };
+  if (status === "CreateContainerConfigError") {
+    return [
+      scheduled,
+      { type: "Normal", reason: "Pulled", message: `Container image "${pod.image}" already present on machine` },
+      { type: "Warning", reason: "Failed", message: `Error: configmap "${missingConfigMaps(state, pod)[0]}" not found` },
+    ];
+  }
+  if (status === "CrashLoopBackOff") {
+    const crash = crashReason(state, pod);
+    return [
+      scheduled,
+      { type: "Normal", reason: "Pulled", message: `Container image "${pod.image}" already present on machine` },
+      { type: "Normal", reason: "Started", message: "Started container app" },
+      ...(crash?.reason === "OOMKilled"
+        ? [{ type: "Warning" as const, reason: "OOMKilling", message: "Memory cgroup out of memory: Killed process 1 (app)" }]
+        : []),
+      { type: "Warning", reason: "BackOff", message: `Back-off restarting failed container app in pod ${pod.name}_${pod.namespace}` },
+    ];
+  }
   if (status === "ImagePullBackOff") {
     return [
       scheduled,
@@ -82,13 +103,31 @@ export function podEvents(state: ClusterState, pod: PodResource): PodEvent[] {
   ];
 }
 
-// Warnings shown by "kubectl get events": only pods that are in trouble
+// Warnings shown by "kubectl get events": pods in trouble and pods a quota refused to create
 export function warningEvents(state: ClusterState, namespace: string | null) {
-  return listPods(state)
-    .filter((p) => (namespace === null || p.namespace === namespace) && isRunning(p) === false)
+  const inScope = (ns: string) => namespace === null || ns === namespace;
+
+  const podWarnings = listPods(state)
+    .filter((p) => inScope(p.namespace) && isRunning(state, p) === false)
     .flatMap((pod) =>
       podEvents(state, pod)
         .filter((event) => event.type === "Warning")
         .map((event) => ({ ...event, namespace: pod.namespace, object: `pod/${pod.name}` }))
     );
+
+  // One FailedCreate per ReplicaSet, like the controller's event
+  const seen = new Set<string>();
+  const quotaWarnings = admitPods(state, podCandidates(state))
+    .rejected.filter((r) => inScope(r.namespace))
+    .map((r) => ({ ...r, replicaSet: r.podName.slice(0, r.podName.lastIndexOf("-")) }))
+    .filter((r) => (seen.has(r.replicaSet) ? false : Boolean(seen.add(r.replicaSet))))
+    .map((r) => ({
+      type: "Warning" as const,
+      reason: "FailedCreate",
+      message: `Error creating: ${r.message}`,
+      namespace: r.namespace,
+      object: `replicaset/${r.replicaSet}`,
+    }));
+
+  return [...podWarnings, ...quotaWarnings];
 }

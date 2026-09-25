@@ -5,6 +5,9 @@ const FLAG_ALIASES: Record<string, string> = {
   "-l": "--selector",
   "-o": "--output",
   "-A": "--all-namespaces",
+  "-f": "--filename",
+  "-c": "--container",
+  "-p": "--previous",
 };
 
 // Flags that take the following token as their value when written without "="
@@ -26,6 +29,13 @@ const VALUE_FLAGS = new Set([
   "--user",
   "--as",
   "--labels",
+  "--filename",
+  "--container",
+  "--from",
+  "--requests",
+  "--limits",
+  "--hard",
+  "--env",
 ]);
 
 export interface ParsedArgs {

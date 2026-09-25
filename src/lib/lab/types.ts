@@ -18,7 +18,26 @@ export interface NamespaceResource extends BaseResource {
   kind: "Namespace";
 }
 
-export interface PodResource extends BaseResource {
+export interface ResourceList {
+  cpu?: string; // "250m", "1"
+  memory?: string; // "128Mi", "1Gi"
+}
+
+export interface Resources {
+  requests?: ResourceList;
+  limits?: ResourceList;
+}
+
+// How the simulated container behaves; all optional so simple labs stay simple
+export interface ContainerConfig {
+  env?: Record<string, string>;
+  envFrom?: string[]; // ConfigMap names imported with envFrom
+  requiredEnv?: string[]; // the app exits (CrashLoopBackOff) unless these variables are set
+  resources?: Resources;
+  memoryUsage?: string; // real memory the app needs; above the limit it gets OOMKilled
+}
+
+export interface PodResource extends BaseResource, ContainerConfig {
   kind: "Pod";
   namespace: string;
   image: string;
@@ -26,7 +45,7 @@ export interface PodResource extends BaseResource {
   owner: string | null; // "DaemonSet" pods can't be evicted by drain
 }
 
-export interface DeploymentResource extends BaseResource {
+export interface DeploymentResource extends BaseResource, ContainerConfig {
   kind: "Deployment";
   namespace: string;
   image: string;
@@ -76,6 +95,33 @@ export interface RoleBindingResource extends BaseResource {
   subjects: string[]; // "ServiceAccount:<ns>:<name>" or "User:<name>"
 }
 
+// A peer with only podSelector means pods in the policy's namespace;
+// with namespaceSelector it means (matching) pods in the matching namespaces
+export interface NetworkPolicyPeer {
+  podSelector?: Labels;
+  namespaceSelector?: Labels;
+}
+
+export interface NetworkPolicyRule {
+  peers: NetworkPolicyPeer[]; // empty = from/to everywhere
+  ports: number[]; // empty = all ports
+}
+
+export interface NetworkPolicyResource extends BaseResource {
+  kind: "NetworkPolicy";
+  namespace: string;
+  podSelector: Labels; // empty = every pod in the namespace
+  policyTypes: ("Ingress" | "Egress")[];
+  ingress: NetworkPolicyRule[];
+  egress: NetworkPolicyRule[];
+}
+
+export interface ResourceQuotaResource extends BaseResource {
+  kind: "ResourceQuota";
+  namespace: string;
+  hard: Record<string, string>; // e.g. { pods: "6", "requests.memory": "2Gi" }
+}
+
 export type Resource =
   | NodeResource
   | NamespaceResource
@@ -86,7 +132,9 @@ export type Resource =
   | SecretResource
   | ServiceAccountResource
   | RoleResource
-  | RoleBindingResource;
+  | RoleBindingResource
+  | NetworkPolicyResource
+  | ResourceQuotaResource;
 
 export type Kind = Resource["kind"];
 
@@ -95,6 +143,7 @@ export type NamespacedResource = Exclude<Resource, NodeResource | NamespaceResou
 export interface ClusterState {
   resources: Resource[];
   nextId: number;
+  files?: Record<string, string>; // manifests saved from the lab editor
 }
 
 // Lab definitions (stored as JSON in LabConfig)
@@ -124,6 +173,15 @@ export type LabCheck =
       verb: string;
       resource: string;
       namespace: string;
+      allowed: boolean;
+    }
+  | {
+      // Runs the same request as "kubectl exec <pod> -- nc -z <host> <port>"
+      type: "connectivity";
+      description: string;
+      from: { namespace: string; selector: Labels };
+      host: string; // service name, "svc.ns", FQDN or pod IP
+      port: number;
       allowed: boolean;
     }
   | { type: "endpoints"; description: string; service: string; namespace: string; count: number }
