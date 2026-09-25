@@ -20,8 +20,7 @@ export const authOptions: NextAuthOptions = {
         if (parsed.success === false) throw new Error(INVALID_LOGIN);
 
         const { email, password } = parsed.data;
-        const forwardedFor = req.headers?.["x-forwarded-for"] as string | undefined;
-        const ip = getClientIp(forwardedFor);
+        const ip = getClientIp((name) => req.headers?.[name] as string | undefined);
 
         // Limit guesses per account and per address
         const [emailLimited, ipLimited] = await Promise.all([

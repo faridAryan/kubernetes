@@ -1,0 +1,15 @@
+# Dependencies are installed inside the image
+node_modules
+# Build outputs are recreated inside the image
+.next
+dist
+# Infrastructure code isn't part of the app image
+infra
+# Git metadata and local env files must never reach the image
+.git
+.env
+.env*.local
+# Editor and OS clutter
+.vscode
+*.log
+tsconfig.tsbuildinfo

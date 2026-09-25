@@ -7,7 +7,7 @@ import { getClientIp, isRateLimited } from "@/lib/rate-limit";
 import { registerSchema } from "@/lib/validation/auth";
 
 export async function POST(request: Request) {
-  const ip = getClientIp(request.headers.get("x-forwarded-for"));
+  const ip = getClientIp((name) => request.headers.get(name));
   if (await isRateLimited(`register:${ip}`, 5, 3600)) {
     return jsonError("Too many sign-ups from this address. Try again later.", 429);
   }

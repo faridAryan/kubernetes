@@ -4,7 +4,8 @@ import { Terminal, Zap, ChevronRight, Play, Clock } from "lucide-react";
 import { getLabCatalog } from "@/lib/queries/labs";
 import { formatDuration, getDifficultyBg, getDifficultyColor } from "@/lib/utils";
 
-export const revalidate = 300;
+// Rendered per request so builds never need a database; queries are cached for 5 minutes
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Hands-on Labs - KubeLearn",

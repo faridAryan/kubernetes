@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import CertificationList from "@/components/certifications/CertificationList";
 import { getCertificationSummaries } from "@/lib/queries/certifications";
 
-export const revalidate = 300;
+// Rendered per request so builds never need a database; queries are cached for 5 minutes
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Certification Paths - KubeLearn",

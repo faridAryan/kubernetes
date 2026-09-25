@@ -20,7 +20,10 @@ export async function isRateLimited(
   return rows[0].count > limit;
 }
 
-// First entry of X-Forwarded-For is the client when running behind CloudFront/ALB
-export function getClientIp(forwardedFor: string | null | undefined): string {
-  return forwardedFor?.split(",")[0]?.trim() || "unknown";
+// CloudFront sets CloudFront-Viewer-Address ("ip:port") and clients can't forge it,
+// unlike the first X-Forwarded-For entry. Fall back to X-Forwarded-For locally.
+export function getClientIp(getHeader: (name: string) => string | null | undefined): string {
+  const viewer = getHeader("cloudfront-viewer-address");
+  if (viewer) return viewer.slice(0, viewer.lastIndexOf(":"));
+  return getHeader("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
 }

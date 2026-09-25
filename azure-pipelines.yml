@@ -1,0 +1,126 @@
+# Azure DevOps pipeline: validate every change, deploy main to AWS with CDK.
+# Requires the "AWS Toolkit for Azure DevOps" extension and an AWS service connection.
+
+# Run the pipeline on pushes to main
+trigger:
+  branches:
+    include:
+      - main
+
+# Run the validation stage for pull requests into main
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  # Node.js version used by every job (matches the Docker image)
+  nodeVersion: "22.x"
+  # Name of the AWS service connection created in Project settings > Service connections
+  awsServiceConnection: "aws-kubelearn"
+  # AWS region to deploy to
+  awsRegion: "us-east-1"
+  # Where npm keeps its download cache, so the Cache task can restore it
+  npm_config_cache: $(Pipeline.Workspace)/.npm
+
+stages:
+  # ---------- Stage 1: lint, type-check and build ----------
+  - stage: Validate
+    displayName: Validate
+    jobs:
+      - job: App
+        displayName: Lint, type-check and build
+        # Microsoft-hosted Linux agent (has Node, Docker and npm available)
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          # Install the requested Node.js version
+          - task: NodeTool@0
+            displayName: Use Node $(nodeVersion)
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          # Restore the npm cache keyed on the lockfile to speed up installs
+          - task: Cache@2
+            displayName: Cache npm (app)
+            inputs:
+              key: 'npm | "$(Agent.OS)" | package-lock.json'
+              path: $(npm_config_cache)
+
+          # Clean install of the app's dependencies (also runs "prisma generate")
+          - script: npm ci
+            displayName: Install app dependencies
+
+          # ESLint with the Next.js rules
+          - script: npm run lint
+            displayName: Lint
+
+          # TypeScript type-check of the app, seed and content
+          - script: npm run typecheck
+            displayName: Type-check app
+
+          # Production build; no database needed because data pages render per request
+          - script: npm run build
+            displayName: Build app
+
+          # Clean install of the CDK project's dependencies
+          - script: npm ci
+            displayName: Install infra dependencies
+            workingDirectory: infra
+
+          # Type-check the CDK code so broken infrastructure never reaches the deploy stage
+          - script: npm run typecheck
+            displayName: Type-check infra
+            workingDirectory: infra
+
+  # ---------- Stage 2: deploy to AWS (main branch only) ----------
+  - stage: Deploy
+    displayName: Deploy to AWS
+    # Only after validation passed, and never for pull requests
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      # A deployment job records history against an environment and honours its approval checks
+      - deployment: Production
+        displayName: CDK deploy
+        # Add approvals/checks to this environment in Pipelines > Environments
+        environment: kubelearn-production
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # Deployment jobs don't check out code automatically
+                - checkout: self
+
+                # Same Node.js version as the build stage
+                - task: NodeTool@0
+                  displayName: Use Node $(nodeVersion)
+                  inputs:
+                    versionSpec: $(nodeVersion)
+
+                # Install the CDK toolkit and constructs
+                - script: npm ci
+                  displayName: Install infra dependencies
+                  workingDirectory: infra
+
+                # Run CDK with AWS credentials from the service connection
+                - task: AWSShellScript@1
+                  displayName: cdk deploy
+                  inputs:
+                    # Service connection holding the AWS credentials or role
+                    awsCredentials: $(awsServiceConnection)
+                    # Region to deploy into
+                    regionName: $(awsRegion)
+                    # Run the commands below
+                    scriptType: inline
+                    # Run from the infra folder
+                    workingDirectory: infra
+                    inlineScript: |
+                      # Stop on the first error
+                      set -e
+                      # Prepare the account/region for CDK (safe to run every time)
+                      npx cdk bootstrap
+                      # Build the Docker image, push it to ECR and update the stack without prompts
+                      npx cdk deploy --require-approval never

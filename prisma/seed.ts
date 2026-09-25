@@ -5,7 +5,11 @@ import bcrypt from "bcryptjs";
 import { badges, certifications } from "./content";
 import type { CertificationContent, LessonContent, ModuleContent } from "./content/types";
 
-const prisma = new PrismaClient();
+// One connection, so the session-level advisory lock below covers every seed query
+const databaseUrl = new URL(process.env.DATABASE_URL ?? "");
+databaseUrl.searchParams.set("connection_limit", "1");
+const prisma = new PrismaClient({ datasourceUrl: databaseUrl.toString() });
+const SEED_LOCK_ID = 727274;
 const LESSONS_DIR = path.join(__dirname, "content", "lessons");
 
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -100,6 +104,8 @@ async function seedCertification(cert: CertificationContent) {
 }
 
 async function main() {
+  // Several containers may start at once; only one seeds at a time
+  await prisma.$executeRaw`SELECT pg_advisory_lock(${SEED_LOCK_ID})`;
   console.log("Seeding content...");
 
   for (const cert of certifications) await seedCertification(cert);
@@ -132,6 +138,7 @@ async function main() {
 
   const lessonCount = certifications.flatMap((c) => c.modules.flatMap((m) => m.lessons)).length;
   console.log(`Seeded ${certifications.length} paths, ${lessonCount} lessons and ${badges.length} badges.`);
+  await prisma.$executeRaw`SELECT pg_advisory_unlock(${SEED_LOCK_ID})`;
 }
 
 main()
