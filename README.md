@@ -2,7 +2,7 @@
 
 A gamified platform for learning Kubernetes and preparing for the KCNA, CKA, CKAD and CKS certifications.
 
-- **4 learning paths, 43 lessons**: readings, quizzes and hands-on labs
+- **4 learning paths, 52 lessons**: readings, quizzes and 20 hands-on labs, including troubleshooting scenarios
 - **Hands-on labs**: a simulated 3-node cluster runs on the server. `kubectl` commands change its state and validation checks the result, so only real solutions pass.
 - **Timed mock exams** drawn from each path's question bank
 - **Spaced-repetition review** of questions you answered wrong
@@ -83,7 +83,18 @@ infra/                   AWS CDK app
 2. Register the lesson in `prisma/content/<path>.ts`. Quizzes list their questions; labs list their starting cluster resources (`initialState`), `hints` and `checks`.
 3. Run `npm run db:seed`. In AWS, content is applied automatically when the containers start.
 
-Lab checks can require a command to have been run (`command`), a resource to exist with certain fields (`exists`), a resource to be gone (`absent`), or a number of running Pods (`pods`).
+Lab checks can require:
+
+| Check | Passes when |
+|-------|-------------|
+| `command` | a matching command was run |
+| `exists` | a resource exists with the given fields (`match`) and without forbidden values (`exclude`) |
+| `absent` | a resource is gone |
+| `pods` | enough Pods matching a selector are Running (optionally not on a given node) |
+| `endpoints` | a Service has at least N ready endpoints |
+| `can-i` | an RBAC question (`kubectl auth can-i`) has the expected answer |
+
+Troubleshooting labs start from a broken `initialState`. A seed with the same kind and name as a base resource (for example, a cordoned `worker-1` Node) replaces it.
 
 ## Deploy to AWS
 

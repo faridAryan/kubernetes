@@ -1,3 +1,4 @@
+import { isImagePullable } from "./images";
 import type {
   ClusterState,
   DeploymentResource,
@@ -67,11 +68,16 @@ function baseResources(createdAt: number): Resource[] {
   ];
 }
 
-// Base 3-node cluster plus the resources a lab starts with
+const resourceKey = (r: Resource) => `${r.kind}/${"namespace" in r ? r.namespace : ""}/${r.name}`;
+
+// Base 3-node cluster plus the resources a lab starts with.
+// A seed with the same kind/namespace/name replaces the base resource (e.g. a cordoned node).
 export function createInitialState(seeds: ResourceSeed[]): ClusterState {
   const createdAt = Date.now() - 5 * DAY_MS;
   const extra = seeds.map((seed) => ({ labels: {}, ...seed, createdAt }) as Resource);
-  return { resources: [...baseResources(createdAt), ...extra], nextId: 1 };
+  const overridden = new Set(extra.map(resourceKey));
+  const base = baseResources(createdAt).filter((r) => overridden.has(resourceKey(r)) === false);
+  return { resources: [...base, ...extra], nextId: 1 };
 }
 
 export function findResource<K extends Kind>(
@@ -138,6 +144,11 @@ export function listPods(state: ClusterState): PodResource[] {
   return [...standalone, ...managed];
 }
 
-export function podStatus(pod: PodResource): string {
-  return pod.node === null ? "Pending" : "Running";
+export function podStatus(pod: PodResource): "Pending" | "ImagePullBackOff" | "Running" {
+  if (pod.node === null) return "Pending";
+  return isImagePullable(pod.image) ? "Running" : "ImagePullBackOff";
+}
+
+export function isRunning(pod: PodResource): boolean {
+  return podStatus(pod) === "Running";
 }

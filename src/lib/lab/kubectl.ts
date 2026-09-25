@@ -1,6 +1,7 @@
 import {
   CLUSTER_SCOPED,
   findResource,
+  isRunning,
   listPods,
   matchesSelector,
   schedulableNodes,
@@ -16,7 +17,9 @@ import {
   tokenize,
   type ParsedArgs,
 } from "./parser";
-import { KIND_PLURAL, KIND_PREFIX, describe, printTable, table } from "./printers";
+import { serviceEndpoints, warningEvents } from "./diagnostics";
+import { KIND_PLURAL, KIND_PREFIX, age, describe, printTable, table } from "./printers";
+import { canI, subjectFromAs } from "./rbac";
 import type {
   ClusterState,
   DeploymentResource,
@@ -24,8 +27,7 @@ import type {
   NodeResource,
   PodResource,
   Resource,
-  RoleBindingResource,
-  RoleResource,
+  ServiceResource,
 } from "./types";
 
 const KIND_ALIASES: Record<string, Kind> = {
@@ -160,6 +162,19 @@ function get(ctx: Context): string {
   const listKind = (kind: Kind) =>
     (kind === "Pod" ? listPods(state) : state.resources.filter((r) => r.kind === kind)).filter(inScope);
 
+  // "kubectl get svc,deploy" prints one section per kind, like "get all"
+  if (kindWord.includes(",")) {
+    return kindWord
+      .split(",")
+      .filter(Boolean)
+      .map((kind) => get({ ...ctx, args: [kind], parsed: { ...parsed, flags: new Map(parsed.flags) } }))
+      .join("\n\n");
+  }
+
+  const virtualKind = kindWord.split("/")[0].toLowerCase();
+  if (["endpoints", "endpoint", "ep"].includes(virtualKind)) return getEndpoints(ctx, kindWord, names);
+  if (["events", "event", "ev"].includes(virtualKind)) return getEvents(ctx);
+
   if (kindWord === "all") {
     const sections = (["Pod", "Service", "Deployment"] as Kind[])
       .map((kind) => listKind(kind))
@@ -186,7 +201,58 @@ function get(ctx: Context): string {
   return printTable(state, items, options);
 }
 
+// Endpoints aren't stored: they're computed from Services and the Pods they select
+function getEndpoints(ctx: Context, kindWord: string, names: string[]): string {
+  const wanted = kindWord.includes("/") ? [kindWord.split("/")[1]] : names;
+  const allNamespaces = hasFlag(ctx.parsed, "--all-namespaces");
+  const services = ctx.state.resources.filter(
+    (r): r is ServiceResource =>
+      r.kind === "Service" &&
+      (allNamespaces || r.namespace === ctx.namespace) &&
+      (wanted.length === 0 || wanted.includes(r.name))
+  );
+
+  const missing = wanted.find((name) => services.every((s) => s.name !== name));
+  if (missing) throw new KubectlError(`Error from server (NotFound): endpoints "${missing}" not found`);
+  if (services.length === 0) return `No resources found in ${ctx.namespace} namespace.`;
+
+  const rows = services.map((service) => {
+    // The API server's own endpoint for the "kubernetes" Service
+    const endpoints = service.name === "kubernetes" ? ["10.0.0.10:6443"] : serviceEndpoints(ctx.state, service);
+    const shown = endpoints.length > 3 ? `${endpoints.slice(0, 3).join(",")} + ${endpoints.length - 3} more...` : endpoints.join(",");
+    return [
+      ...(allNamespaces ? [service.namespace] : []),
+      service.name,
+      shown || "<none>",
+      age(service.createdAt),
+    ];
+  });
+  return table([[...(allNamespaces ? ["NAMESPACE"] : []), "NAME", "ENDPOINTS", "AGE"], ...rows]);
+}
+
+function getEvents(ctx: Context): string {
+  const allNamespaces = hasFlag(ctx.parsed, "--all-namespaces");
+  const events = warningEvents(ctx.state, allNamespaces ? null : ctx.namespace);
+  if (events.length === 0) {
+    return allNamespaces ? "No resources found" : `No resources found in ${ctx.namespace} namespace.`;
+  }
+  const rows = events.map((e) => [...(allNamespaces ? [e.namespace] : []), "10s", e.type, e.reason, e.object, e.message]);
+  return table([[...(allNamespaces ? ["NAMESPACE"] : []), "LAST SEEN", "TYPE", "REASON", "OBJECT", "MESSAGE"], ...rows]);
+}
+
 function describeCommand(ctx: Context): string {
+  const [first, second] = ctx.args;
+
+  // "kubectl describe <kind>" without a name describes every object of that kind
+  if (second === undefined && first !== undefined && first.includes("/") === false) {
+    const kind = resolveKind(first);
+    const items = (kind === "Pod" ? listPods(ctx.state) : ctx.state.resources.filter((r) => r.kind === kind)).filter(
+      (r) => ("namespace" in r ? r.namespace === ctx.namespace : true)
+    );
+    if (items.length === 0) return `No resources found in ${ctx.namespace} namespace.`;
+    return items.map((r) => describe(ctx.state, r)).join("\n\n\n");
+  }
+
   const { kind, name } = resolveTarget(ctx.args);
   const resource = kind === "Pod" ? findPod(ctx, name) : getExisting(ctx, kind, name);
   return describe(ctx.state, resource);
@@ -330,8 +396,21 @@ function scale(ctx: Context): string {
   return `deployment.apps/${name} scaled`;
 }
 
+function setSelector(ctx: Context, args: string[]): string {
+  const { kind, name, rest } = resolveTarget(args);
+  if (kind !== "Service") throw new KubectlError("error: only services are supported by set selector in this lab");
+  const pairs = rest.filter((arg) => arg.includes("="));
+  if (pairs.length === 0) throw new KubectlError("error: a selector like app=web is required");
+
+  // Like kubectl, the new selector replaces the old one entirely
+  const service: ServiceResource = getExisting(ctx, "Service", name);
+  service.selector = parseLabels(pairs.join(","));
+  return `service/${name} selector updated`;
+}
+
 function set(ctx: Context): string {
   const [sub, ...rest] = ctx.args;
+  if (sub === "selector") return setSelector(ctx, rest);
   if (sub !== "image") throw new KubectlError(`error: unknown command "set ${sub ?? ""}"`);
 
   const { kind, name, rest: assignments } = resolveTarget(rest);
@@ -533,6 +612,11 @@ function logs(ctx: Context): string {
   if (pod.node === null) {
     throw new KubectlError(`Error from server (BadRequest): container "${pod.name}" in pod "${pod.name}" is waiting to start: ContainerCreating`);
   }
+  if (isRunning(pod) === false) {
+    throw new KubectlError(
+      `Error from server (BadRequest): container "${pod.name}" in pod "${pod.name}" is waiting to start: trying and failing to pull image`
+    );
+  }
   if (pod.image.startsWith("nginx")) {
     return "/docker-entrypoint.sh: Configuration complete; ready for start up\n2024/06/01 10:00:00 [notice] 1#1: nginx started";
   }
@@ -547,25 +631,7 @@ function auth(ctx: Context): string {
   const as = getFlag(ctx.parsed, "--as");
   if (as === undefined) return "yes"; // lab user is cluster-admin
 
-  const saMatch = as.match(/^system:serviceaccount:([^:]+):(.+)$/);
-  const subject = saMatch ? `ServiceAccount:${saMatch[1]}:${saMatch[2]}` : `User:${as}`;
-  const plural = resource.endsWith("s") ? resource : `${resource}s`;
-
-  const roles = ctx.state.resources.filter(
-    (r): r is RoleResource => r.kind === "Role" && r.namespace === ctx.namespace
-  );
-  const allowed = ctx.state.resources
-    .filter((r): r is RoleBindingResource => r.kind === "RoleBinding" && r.namespace === ctx.namespace && r.subjects.includes(subject))
-    .some((binding) =>
-      roles.some(
-        (role) =>
-          role.name === binding.role &&
-          (role.verbs.includes(verb) || role.verbs.includes("*")) &&
-          (role.resources.includes(plural) || role.resources.includes("*"))
-      )
-    );
-
-  return allowed ? "yes" : "no";
+  return canI(ctx.state, subjectFromAs(as), verb, resource, ctx.namespace) ? "yes" : "no";
 }
 
 function config(ctx: Context): string {

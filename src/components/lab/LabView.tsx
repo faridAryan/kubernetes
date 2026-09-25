@@ -123,7 +123,7 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
         {
           type: "system",
           content:
-            "Commands run against a simulated cluster: get, describe, run, create, expose, scale, set image,\nrollout, label, delete, cordon, uncordon, drain, taint, logs, auth can-i, config.\nUse 'clear' to clear the screen and the Validate button when you're done.",
+            "Commands run against a simulated cluster: get (incl. events, endpoints), describe, run, create,\nexpose, scale, set image, set selector, rollout, label, delete, cordon, uncordon, drain, taint,\nlogs, auth can-i, config. Use 'clear' to clear the screen and Validate when you're done.",
         }
       );
       return;

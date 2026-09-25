@@ -112,9 +112,21 @@ export type LabCheck =
       name: string;
       namespace?: string;
       match?: Record<string, unknown>;
-      absentKeys?: string[]; // keys that must not be in a ConfigMap/Secret's data
+      // Values that must NOT be present: array fields (taints) or object keys (data, labels)
+      exclude?: Record<string, string[]>;
     }
   | { type: "absent"; description: string; kind: Kind; name: string; namespace?: string }
+  | {
+      // RBAC outcome, e.g. "jane can list pods in dev" or "anonymous can't read secrets"
+      type: "can-i";
+      description: string;
+      as: string; // kubectl --as value, e.g. "system:serviceaccount:dev:ci"
+      verb: string;
+      resource: string;
+      namespace: string;
+      allowed: boolean;
+    }
+  | { type: "endpoints"; description: string; service: string; namespace: string; count: number }
   | {
       type: "pods";
       description: string;

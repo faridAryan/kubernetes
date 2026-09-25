@@ -1,4 +1,5 @@
-import { listPods, matchesSelector, podStatus } from "./cluster";
+import { isRunning, listPods, matchesSelector, podStatus } from "./cluster";
+import { podEvents, podIp, serviceEndpoints } from "./diagnostics";
 import type { ClusterState, Kind, Labels, Resource } from "./types";
 
 export const KIND_PREFIX: Record<Kind, string> = {
@@ -62,14 +63,14 @@ function columns(state: ClusterState, r: Resource, wide: boolean): [string[], st
     case "Namespace":
       return [["NAME", "STATUS", "AGE"], [r.name, "Active", age(r.createdAt)]];
     case "Pod": {
-      const base = [r.name, podStatus(r) === "Running" ? "1/1" : "0/1", podStatus(r), "0", age(r.createdAt)];
+      const base = [r.name, isRunning(r) ? "1/1" : "0/1", podStatus(r), "0", age(r.createdAt)];
       return wide
-        ? [["NAME", "READY", "STATUS", "RESTARTS", "AGE", "NODE"], [...base, r.node ?? "<none>"]]
+        ? [["NAME", "READY", "STATUS", "RESTARTS", "AGE", "IP", "NODE"], [...base, podIp(r), r.node ?? "<none>"]]
         : [["NAME", "READY", "STATUS", "RESTARTS", "AGE"], base];
     }
     case "Deployment": {
       const running = listPods(state).filter(
-        (p) => p.namespace === r.namespace && p.owner === "ReplicaSet" && matchesSelector(p.labels, r.labels) && p.node !== null
+        (p) => p.namespace === r.namespace && p.owner === "ReplicaSet" && matchesSelector(p.labels, r.labels) && isRunning(p)
       ).length;
       return [
         ["NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"],
@@ -130,15 +131,13 @@ export function describe(state: ClusterState, r: Resource): string {
       lines.push(["Roles", r.roles], ["Taints", r.taints.join(", ") || "<none>"], ["Unschedulable", String(r.schedulable === false)]);
       break;
     case "Pod":
-      lines.push(["Node", r.node ?? "<none>"], ["Status", podStatus(r)], ["Image", r.image]);
+      lines.push(["Node", r.node ?? "<none>"], ["Status", podStatus(r)], ["IP", podIp(r)], ["Image", r.image]);
       break;
     case "Deployment":
       lines.push(["Replicas", `${r.replicas} desired`], ["Selector", formatLabels(r.labels)], ["Image", r.image]);
       break;
     case "Service": {
-      const endpoints = listPods(state).filter(
-        (p) => p.namespace === r.namespace && p.node !== null && Object.keys(r.selector).length > 0 && matchesSelector(p.labels, r.selector)
-      ).length;
+      const endpoints = serviceEndpoints(state, r);
       lines.push(
         ["Type", r.type],
         ["IP", r.clusterIP],
@@ -146,7 +145,7 @@ export function describe(state: ClusterState, r: Resource): string {
         ["TargetPort", `${r.targetPort}/TCP`],
         ["NodePort", r.nodePort === null ? "<none>" : `${r.nodePort}/TCP`],
         ["Selector", formatLabels(r.selector)],
-        ["Endpoints", `${endpoints} pod(s)`]
+        ["Endpoints", endpoints.length > 0 ? endpoints.join(",") : "<none>"]
       );
       break;
     }
@@ -165,5 +164,9 @@ export function describe(state: ClusterState, r: Resource): string {
   }
 
   const width = Math.max(...lines.map(([key]) => key.length)) + 2;
-  return lines.map(([key, value]) => `${`${key}:`.padEnd(width)}${value}`).join("\n");
+  const body = lines.map(([key, value]) => `${`${key}:`.padEnd(width)}${value}`).join("\n");
+  if (r.kind !== "Pod") return body;
+
+  const events = podEvents(state, r).map((e) => ["  " + e.type, e.reason, "5s", e.message]);
+  return `${body}\nEvents:\n${table([["  Type", "Reason", "Age", "Message"], ...events])}`;
 }

@@ -1,4 +1,6 @@
-import { CLUSTER_SCOPED, findResource, listPods, matchesSelector } from "./cluster";
+import { CLUSTER_SCOPED, findResource, isRunning, listPods, matchesSelector } from "./cluster";
+import { serviceEndpoints } from "./diagnostics";
+import { canI, subjectFromAs } from "./rbac";
 import type { CheckResult, ClusterState, LabCheck } from "./types";
 
 // Every expected field must match; objects are compared as subsets, arrays by inclusion
@@ -16,6 +18,16 @@ function matchesFields(actual: Record<string, unknown>, expected: Record<string,
   });
 }
 
+// True when any excluded value is still in an array field, or any excluded key in an object field
+function hasExcluded(actual: Record<string, unknown>, exclude: Record<string, string[]>): boolean {
+  return Object.entries(exclude).some(([key, values]) => {
+    const have = actual[key];
+    if (Array.isArray(have)) return values.some((value) => have.includes(value));
+    if (have !== null && typeof have === "object") return values.some((value) => value in have);
+    return false;
+  });
+}
+
 function evaluate(check: LabCheck, state: ClusterState, commands: string[]): boolean {
   switch (check.type) {
     case "command": {
@@ -30,19 +42,24 @@ function evaluate(check: LabCheck, state: ClusterState, commands: string[]): boo
           : findResource(state, check.kind, check.name, namespace);
       if (resource === undefined) return false;
 
-      const data = "data" in resource ? resource.data : {};
-      const hasForbiddenKey = (check.absentKeys ?? []).some((key) => key in data);
-      return hasForbiddenKey === false && matchesFields(resource as unknown as Record<string, unknown>, check.match ?? {});
+      const fields = resource as unknown as Record<string, unknown>;
+      return matchesFields(fields, check.match ?? {}) && hasExcluded(fields, check.exclude ?? {}) === false;
     }
     case "absent": {
       const namespace = CLUSTER_SCOPED.includes(check.kind) ? undefined : check.namespace ?? "default";
       return findResource(state, check.kind, check.name, namespace) === undefined;
     }
+    case "endpoints": {
+      const service = findResource(state, "Service", check.service, check.namespace);
+      return service !== undefined && serviceEndpoints(state, service).length >= check.count;
+    }
+    case "can-i":
+      return canI(state, subjectFromAs(check.as), check.verb, check.resource, check.namespace) === check.allowed;
     case "pods": {
       const pods = listPods(state).filter(
         (p) => p.namespace === check.namespace && matchesSelector(p.labels, check.selector)
       );
-      const running = pods.filter((p) => p.node !== null && p.node !== check.notOnNode);
+      const running = pods.filter((p) => isRunning(p) && p.node !== check.notOnNode);
       return running.length >= check.running && running.length === pods.length;
     }
   }
