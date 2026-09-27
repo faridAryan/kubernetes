@@ -28,31 +28,33 @@ A gamified platform for learning Kubernetes and preparing for the KCNA, CKA, CKA
 | Hosting | AWS: CloudFront → ALB → ECS Fargate → RDS PostgreSQL, provisioned with CDK (TypeScript) |
 | CI/CD | Azure DevOps (`azure-pipelines.yml`) |
 
-## Run locally (Windows 11 / PowerShell)
+## Documentation
+
+| Guide | Covers |
+|-------|--------|
+| [Running locally](docs/RUNNING_LOCALLY.md) | Setup on Windows 11, everyday commands, running the production container, troubleshooting |
+| [Deploying to AWS](docs/DEPLOYING_TO_AWS.md) | Architecture, costs, first deploy with CDK, updates, Azure DevOps pipeline, operations, tear-down |
+
+## Quick start (Windows 11 / PowerShell)
 
 Prerequisites: Node.js 22 and Docker Desktop.
 
 ```powershell
 # Start PostgreSQL in Docker
 docker compose up -d
-
-# Create your local environment file, then set NEXTAUTH_SECRET in it
+# Create your local environment file, then set NEXTAUTH_SECRET (and SEED_DEMO_USER="true" for a demo login) in it
 Copy-Item .env.example .env
-
 # Install dependencies (also generates the Prisma client)
 npm install
-
 # Create the tables
 npm run db:migrate
-
-# Load the course content (add $env:SEED_DEMO_USER="true" first for a demo login)
+# Load the course content
 npm run db:seed
-
 # Start the dev server on http://localhost:3000
 npm run dev
 ```
 
-The demo account (when seeded with `SEED_DEMO_USER=true`) is `demo@kubelearn.dev` / `kubelearn-demo`.
+The demo account (when seeded with `SEED_DEMO_USER="true"`) is `demo@kubelearn.dev` / `kubelearn-demo`. The full walkthrough is in [docs/RUNNING_LOCALLY.md](docs/RUNNING_LOCALLY.md).
 
 ## Scripts
 
@@ -113,32 +115,20 @@ Troubleshooting labs start from a broken `initialState`. A seed with the same ki
 
 ## Deploy to AWS
 
-The CDK app in `infra/` creates:
-
-- a VPC (public, private and isolated subnets, 1 NAT gateway)
-- RDS PostgreSQL 16 (encrypted, 7-day backups, deletion protection)
-- ECS Fargate (2–6 tasks, CPU autoscaling) behind an Application Load Balancer
-- CloudFront (HTTPS, edge caching for static assets)
-- Secrets Manager secrets for the database, NextAuth and the CloudFront→ALB origin header
-
-The container runs `prisma migrate deploy` and the seed on start, then starts Next.js.
+`infra/` is an AWS CDK app that builds the image and creates CloudFront, an Application Load Balancer, ECS Fargate, RDS PostgreSQL 16 and Secrets Manager secrets. Containers apply migrations and seed the content on start.
 
 ```powershell
+# Move into the CDK project
 cd infra
-npm install
-npx cdk bootstrap     # once per account/region
-npx cdk deploy        # prints AppUrl when done
+# Install the CDK dependencies
+npm ci
+# Once per account and region
+npx cdk bootstrap
+# Build, push and deploy; prints AppUrl when done
+npx cdk deploy
 ```
 
-Add `-c multiAz=true` for a standby database in a second Availability Zone.
-
-### Azure DevOps
-
-`azure-pipelines.yml` validates pull requests (lint, type-check, build) and deploys `main`:
-
-1. Install the **AWS Toolkit for Azure DevOps** extension.
-2. Create an AWS service connection named `aws-kubelearn` (or change `awsServiceConnection`).
-3. Optionally add approvals to the `kubelearn-production` environment.
+`azure-pipelines.yml` validates pull requests and deploys `main`. Setup, costs, operations and tear-down are covered in [docs/DEPLOYING_TO_AWS.md](docs/DEPLOYING_TO_AWS.md).
 
 ## Security notes
 
