@@ -4,7 +4,8 @@ import { awardXp } from "@/lib/gamification/xp";
 import { issueCertificateIfEligible } from "./certificate";
 
 // Marks a lesson completed. XP, enrollment progress and certificates are handled only on the first completion.
-export async function completeLesson(userId: string, lessonId: string, score?: number) {
+// xpFactor < 1 when a lab was solved after viewing its solution
+export async function completeLesson(userId: string, lessonId: string, score?: number, xpFactor = 1) {
   return prisma.$transaction(async (tx) => {
     const lesson = await tx.lesson.findUniqueOrThrow({
       where: { id: lessonId },
@@ -48,9 +49,9 @@ export async function completeLesson(userId: string, lessonId: string, score?: n
     const { badges } = await awardXp(
       tx,
       userId,
-      lesson.xpReward,
+      Math.round(lesson.xpReward * xpFactor),
       isLab ? AchievementType.lab_complete : AchievementType.lesson_complete,
-      `${isLab ? "Completed lab" : "Completed lesson"}: ${lesson.title}`
+      `${isLab ? "Completed lab" : "Completed lesson"}: ${lesson.title}${xpFactor < 1 ? " (with solution)" : ""}`
     );
 
     if (progress === 100) await issueCertificateIfEligible(tx, userId, certificationId);

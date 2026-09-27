@@ -15,6 +15,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import ManifestEditor from "./ManifestEditor";
+import SolutionPanel, { type Solution } from "./SolutionPanel";
 
 interface Props {
   labConfigId: string;
@@ -65,6 +66,9 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
   const [currentHint, setCurrentHint] = useState(0);
   const [startError, setStartError] = useState("");
   const [files, setFiles] = useState<Record<string, string>>({});
+  const [solutionAvailable, setSolutionAvailable] = useState(false);
+  const [solution, setSolution] = useState<Solution | null>(null);
+  const [openRequest, setOpenRequest] = useState<{ name: string; content: string; id: number }>();
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -128,7 +132,8 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
       append({ type: "error", content: data.error });
       return;
     }
-    if (filesToSave) setFiles((prev) => ({ ...prev, ...filesToSave }));
+    // Keep the editor's file list in sync with saves and "> file" redirects
+    setFiles((prev) => ({ ...prev, ...(filesToSave ?? {}), ...(data.savedFiles ?? {}) }));
     if (data.output) append({ type: data.isError ? "error" : "output", content: data.output });
   };
 
@@ -150,7 +155,7 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
         {
           type: "system",
           content:
-            "Commands run against a simulated cluster: get (incl. events, endpoints, netpol, quota), describe, run,\ncreate (incl. quota, -f), apply -f, delete, expose, scale, set image|env|resources|selector, rollout,\nlabel, logs [--previous], exec <pod> -- curl|wget|nc|nslookup|env, cordon, drain, taint, auth can-i.\nWrite YAML in the manifest editor; 'ls' and 'cat' show saved files. Validate when you're done.",
+            "Commands run against a simulated cluster: get (-o yaml|json|name, events, endpoints, netpol, quota, pv, pvc, sc),\ndescribe, run, create (incl. quota, -f), apply -f, patch -p, delete, expose, scale, set image|env|resources|selector,\nrollout, label, logs [--previous], exec <pod> -- curl|wget|nc|nslookup|env, cordon, drain, taint, auth can-i.\nUse --dry-run=client -o yaml and '> file.yaml' to generate manifests; edit them in the manifest editor. 'ls'/'cat' show files.",
         }
       );
       return;
@@ -193,11 +198,30 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
     }
 
     setChecks(data.checks);
+    setSolutionAvailable(data.solutionAvailable === true);
     if (data.passed) {
       setPassed(true);
       router.refresh();
     }
   };
+
+  const revealSolution = async () => {
+    if (sessionId === null) return;
+    const res = await fetch(`/api/lab-sessions/${sessionId}/solution`, { method: "POST" });
+    const data = await res.json();
+    if (res.ok === false) {
+      append({ type: "error", content: data.error });
+      return;
+    }
+    setSolution(data);
+  };
+
+  const fillPrompt = (command: string) => {
+    setInput(command);
+    inputRef.current?.focus();
+  };
+
+  const canRevealSolution = solutionAvailable || ended || timeLeft === 0;
 
   if (sessionId === null) {
     return (
@@ -331,7 +355,23 @@ export default function LabView({ labConfigId, hints, timeLimit, instructions, b
         <div className="px-4 pb-4">{instructions}</div>
       </details>
 
-      <ManifestEditor files={files} disabled={busy || ended} onSave={handleSaveFile} />
+      {canRevealSolution && solution === null && (
+        <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-accent-yellow/5 border border-accent-yellow/30 text-sm">
+          <span className="text-kube-300">Stuck? You can look at a worked solution. Finishing after viewing it earns half the XP.</span>
+          <button onClick={revealSolution} className="btn-secondary text-sm">
+            Show solution
+          </button>
+        </div>
+      )}
+      {solution && (
+        <SolutionPanel
+          solution={solution}
+          onUseCommand={fillPrompt}
+          onOpenFile={(name, content) => setOpenRequest({ name, content, id: Date.now() })}
+        />
+      )}
+
+      <ManifestEditor files={files} disabled={busy || ended} onSave={handleSaveFile} openRequest={openRequest} />
 
       <div className="terminal-container">
         <div className="flex items-center gap-2 px-4 py-2 bg-kube-900 border-b border-kube-700">

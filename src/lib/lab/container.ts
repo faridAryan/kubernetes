@@ -1,5 +1,7 @@
-import { findResource } from "./cluster";
+import { appPort, probeKill, readinessError, type ProbeKill } from "./app";
+import { findResource, podIp } from "./cluster";
 import { isImagePullable } from "./images";
+import { volumeProblem } from "./storage";
 import { parseMemory } from "./units";
 import type { ClusterState, PodResource } from "./types";
 
@@ -9,6 +11,7 @@ export interface CrashReason {
   reason: "Error" | "OOMKilled";
   exitCode: number;
   log: string;
+  probe?: ProbeKill; // set when the kubelet killed it for failing a probe
 }
 
 // ConfigMaps referenced with envFrom that don't exist yet
@@ -43,11 +46,20 @@ export function crashReason(state: ClusterState, pod: PodResource): CrashReason 
       log: `Starting ${pod.image.split(":")[0]} service...\nFATAL: required environment variable ${missing} is not set\nexit status 1`,
     };
   }
+  const kill = probeKill(pod, podIp(pod));
+  if (kill) {
+    return {
+      reason: "Error",
+      exitCode: 137,
+      log: `Starting ${pod.image.split("/").pop()?.split(":")[0]} on :${appPort(pod)}...\nListening\nReceived SIGTERM, shutting down`,
+      probe: kill,
+    };
+  }
   return null;
 }
 
 export function podStatus(state: ClusterState, pod: PodResource): PodPhase {
-  if (pod.node === null) return "Pending";
+  if (pod.node === null || volumeProblem(state, pod)) return "Pending";
   if (isImagePullable(pod.image) === false) return "ImagePullBackOff";
   if (missingConfigMaps(state, pod).length > 0) return "CreateContainerConfigError";
   if (crashReason(state, pod)) return "CrashLoopBackOff";
@@ -56,4 +68,9 @@ export function podStatus(state: ClusterState, pod: PodResource): PodPhase {
 
 export function isRunning(state: ClusterState, pod: PodResource): boolean {
   return podStatus(state, pod) === "Running";
+}
+
+// Running and passing its readiness probe: only these pods receive Service traffic
+export function isReady(state: ClusterState, pod: PodResource): boolean {
+  return isRunning(state, pod) && readinessError(pod, podIp(pod)) === null;
 }

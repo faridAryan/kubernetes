@@ -1,3 +1,4 @@
+import { appPaths } from "./app";
 import { containerEnv } from "./container";
 import { connect, canResolveDns, findServiceByName, type ConnectResult } from "./network";
 import { KubectlError } from "./parser";
@@ -27,10 +28,22 @@ function httpBody(target: PodResource): string {
 
 const isHttpServer = (pod: PodResource) => pod.image.startsWith("postgres") === false && pod.image.startsWith("redis") === false;
 
-function parseUrl(raw: string): { host: string; port: number } {
-  const match = raw.match(/^(?:https?:\/\/)?([^/:]+)(?::(\d+))?/);
+function parseUrl(raw: string): { host: string; port: number; path: string } {
+  const match = raw.match(/^(?:https?:\/\/)?([^/:?]+)(?::(\d+))?([^?#]*)/);
   if (match === null) throw new KubectlError(`curl: (3) URL rejected: Malformed input to a URL function`);
-  return { host: match[1], port: match[2] ? Number(match[2]) : raw.startsWith("https") ? 443 : 80 };
+  return {
+    host: match[1],
+    port: match[2] ? Number(match[2]) : raw.startsWith("https") ? 443 : 80,
+    path: match[3] || "/",
+  };
+}
+
+const servesPath = (target: PodResource, path: string) => appPaths(target).includes(path);
+
+function notFoundBody(target: PodResource): string {
+  return target.image.startsWith("nginx")
+    ? "<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>"
+    : "404 page not found";
 }
 
 // Value of "-m 2", "--max-time=2", "-T 2", "-w 2" style options
@@ -48,13 +61,16 @@ const positional = (args: string[], valueFlags: string[]) =>
 function curl(state: ClusterState, pod: PodResource, args: string[]): string {
   const url = positional(args, ["-m", "--max-time", "--connect-timeout", "-o", "-H", "-X"])[0];
   if (url === undefined) throw new KubectlError("curl: try 'curl --help' for more information");
-  const { host, port } = parseUrl(url);
+  const { host, port, path } = parseUrl(url);
   const timeoutMs = Number(option(args, ["-m", "--max-time", "--connect-timeout"]) ?? 5) * 1000;
   const result = connect(state, pod, host, port);
 
   switch (result.status) {
     case "open":
-      if (result.target && isHttpServer(result.target)) return httpBody(result.target);
+      if (result.target && isHttpServer(result.target)) {
+        // Without -f, curl prints error pages and exits 0 like the real thing
+        return servesPath(result.target, path) ? httpBody(result.target) : notFoundBody(result.target);
+      }
       throw new KubectlError("curl: (52) Empty reply from server\ncommand terminated with exit code 52");
     case "timeout":
       throw new KubectlError(`curl: (28) Connection timed out after ${timeoutMs + 1} milliseconds\ncommand terminated with exit code 28`);
@@ -68,7 +84,7 @@ function curl(state: ClusterState, pod: PodResource, args: string[]): string {
 function wget(state: ClusterState, pod: PodResource, args: string[]): string {
   const url = positional(args, ["-T", "-O", "-U"])[0];
   if (url === undefined) throw new KubectlError("BusyBox wget: missing URL");
-  const { host, port } = parseUrl(url);
+  const { host, port, path } = parseUrl(url);
   const toStdout = args.some((a) => a === "-O-" || a === "-qO-" || (a === "-O" && args[args.indexOf(a) + 1] === "-"));
   const quiet = args.some((a) => a.startsWith("-q"));
   const result = connect(state, pod, host, port);
@@ -77,6 +93,9 @@ function wget(state: ClusterState, pod: PodResource, args: string[]): string {
     case "open": {
       const target = result.target as PodResource;
       if (isHttpServer(target) === false) throw new KubectlError("wget: error getting response: Connection reset by peer\ncommand terminated with exit code 1");
+      if (servesPath(target, path) === false) {
+        throw new KubectlError(`${quiet ? "" : `Connecting to ${host} (${result.ip}:${port})\n`}wget: server returned error: HTTP/1.1 404 Not Found\ncommand terminated with exit code 1`);
+      }
       if (toStdout) return quiet ? httpBody(target) : `Connecting to ${host} (${result.ip}:${port})\nwriting to stdout\n${httpBody(target)}\n-                    100% |********************************|   615  0:00:00 ETA\nwritten to stdout`;
       return quiet ? "" : `Connecting to ${host} (${result.ip}:${port})\nsaving to 'index.html'\nindex.html           100% |********************************|   615  0:00:00 ETA\n'index.html' saved`;
     }

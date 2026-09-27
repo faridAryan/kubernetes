@@ -3,11 +3,19 @@ import { prisma } from "@/lib/prisma";
 import { completeLesson } from "@/lib/learning/progress";
 import { isLessonUnlocked } from "@/lib/learning/unlock";
 import { runChecks } from "./checks";
-import { createInitialState } from "./cluster";
+import { createInitialState } from "./initial-state";
 import { executeCommand } from "./kubectl";
 import type { CheckResult, ClusterState, LabCheck, ResourceSeed } from "./types";
 
 const MAX_COMMANDS = 500;
+// Failed validations before the solution can be revealed
+const ATTEMPTS_BEFORE_SOLUTION = 2;
+
+export interface LabSolution {
+  explanation: string;
+  commands: string[];
+  files?: Record<string, string>;
+}
 
 type LabResult<T> = { ok: true; value: T } | { ok: false; error: string; status: number };
 
@@ -60,6 +68,7 @@ async function getActiveSession(userId: string, sessionId: string) {
       expiresAt: true,
       state: true,
       commands: true,
+      solutionViewed: true,
       labConfig: { select: { lessonId: true, checks: true } },
     },
   });
@@ -74,13 +83,14 @@ async function getActiveSession(userId: string, sessionId: string) {
 }
 
 const MAX_FILES = 20;
+const MAX_FILE_LENGTH = 20_000;
 
 export async function runLabCommand(
   userId: string,
   sessionId: string,
   command: string,
   files: Record<string, string> = {}
-): Promise<LabResult<{ output: string; isError: boolean; files: string[] }>> {
+): Promise<LabResult<{ output: string; isError: boolean; files: string[]; savedFiles: Record<string, string> }>> {
   const result = await getActiveSession(userId, sessionId);
   if (result.ok === false) return result;
 
@@ -94,6 +104,14 @@ export async function runLabCommand(
   if (Object.keys(mergedFiles).length > MAX_FILES) return fail(`A lab session can hold at most ${MAX_FILES} files`, 400);
 
   const exec = executeCommand({ ...current, files: mergedFiles }, command);
+
+  // Files written by the command itself ("kubectl get deploy web -o yaml > web.yaml") obey the same limits
+  const resultFiles = exec.state.files ?? {};
+  if (Object.keys(resultFiles).length > MAX_FILES) return fail(`A lab session can hold at most ${MAX_FILES} files`, 400);
+  if (Object.values(resultFiles).some((content) => content.length > MAX_FILE_LENGTH)) {
+    return fail(`Files are limited to ${MAX_FILE_LENGTH} characters`, 400);
+  }
+
   await prisma.labSession.update({
     where: { id: sessionId },
     data: {
@@ -101,14 +119,20 @@ export async function runLabCommand(
       commands: { push: command },
     },
   });
+  const savedFiles = Object.fromEntries(
+    Object.entries(resultFiles).filter(([name, content]) => mergedFiles[name] !== content)
+  );
 
-  return { ok: true, value: { output: exec.output, isError: exec.isError, files: Object.keys(mergedFiles) } };
+  return {
+    ok: true,
+    value: { output: exec.output, isError: exec.isError, files: Object.keys(resultFiles), savedFiles },
+  };
 }
 
 export async function validateLab(
   userId: string,
   sessionId: string
-): Promise<LabResult<{ passed: boolean; score: number; checks: CheckResult[] }>> {
+): Promise<LabResult<{ passed: boolean; score: number; checks: CheckResult[]; solutionAvailable: boolean }>> {
   const result = await getActiveSession(userId, sessionId);
   if (result.ok === false) return result;
 
@@ -127,8 +151,50 @@ export async function validateLab(
       where: { id: sessionId },
       data: { status: "completed", completedAt: new Date(), score },
     });
-    await completeLesson(userId, session.labConfig.lessonId, score);
+    await completeLesson(userId, session.labConfig.lessonId, score, session.solutionViewed ? 0.5 : 1);
+    return { ok: true, value: { passed, score, checks, solutionAvailable: true } };
   }
 
-  return { ok: true, value: { passed, score, checks } };
+  const updated = await prisma.labSession.update({
+    where: { id: sessionId },
+    data: { failedValidations: { increment: 1 } },
+    select: { failedValidations: true },
+  });
+  return {
+    ok: true,
+    value: { passed, score, checks, solutionAvailable: updated.failedValidations >= ATTEMPTS_BEFORE_SOLUTION },
+  };
+}
+
+// The solution unlocks after a few honest attempts, when time runs out, or once the lab is done
+export async function revealSolution(userId: string, sessionId: string): Promise<LabResult<LabSolution>> {
+  const session = await prisma.labSession.findFirst({
+    where: { id: sessionId, userId },
+    select: {
+      status: true,
+      expiresAt: true,
+      failedValidations: true,
+      labConfig: {
+        select: {
+          solution: true,
+          lesson: { select: { progress: { where: { userId }, select: { status: true } } } },
+        },
+      },
+    },
+  });
+  if (session === null) return fail("Lab session not found", 404);
+
+  const alreadyCompleted = session.labConfig.lesson.progress[0]?.status === "completed";
+  const timeUp = session.status === "expired" || session.expiresAt.getTime() < Date.now();
+  const earned = session.failedValidations >= ATTEMPTS_BEFORE_SOLUTION;
+
+  if (alreadyCompleted === false && timeUp === false && earned === false) {
+    return fail(`Validate at least ${ATTEMPTS_BEFORE_SOLUTION} times before revealing the solution`, 403);
+  }
+
+  // Seeing the answer before finishing halves the XP for this lab
+  if (alreadyCompleted === false && session.status === "active") {
+    await prisma.labSession.update({ where: { id: sessionId }, data: { solutionViewed: true } });
+  }
+  return { ok: true, value: session.labConfig.solution as unknown as LabSolution };
 }

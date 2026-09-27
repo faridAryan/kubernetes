@@ -57,6 +57,7 @@ async function seedLesson(cert: CertificationContent, module: ModuleContent, mod
       initialState: json(lesson.initialState ?? []),
       checks: json(lesson.checks),
       hints: json(lesson.hints),
+      solution: json(lesson.solution),
       timeLimit: lesson.timeLimit,
     };
     await prisma.labConfig.upsert({

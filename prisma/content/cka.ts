@@ -78,6 +78,15 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 120,
           intro: "Give a CI ServiceAccount exactly the permissions it needs.",
+          solution: {
+            explanation: "A Role lists verbs on resources inside one namespace, and a RoleBinding grants it to a subject. ServiceAccounts are written namespace:name in --serviceaccount.",
+            commands: [
+              "kubectl create serviceaccount deployer -n dev",
+              "kubectl create role pod-manager --verb=get,list,create,delete --resource=pods -n dev",
+              "kubectl create rolebinding deployer-binding --role=pod-manager --serviceaccount=dev:deployer -n dev",
+              "kubectl auth can-i delete pods --as=system:serviceaccount:dev:deployer -n dev",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl create serviceaccount deployer -n dev",
@@ -180,6 +189,16 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 120,
           intro: "Update a Deployment, scale it and roll back a bad release.",
+          solution: {
+            explanation: "Each image change is a new revision. Scaling isn't, so after scaling to 5 a rollout undo brings back nginx:1.25 and keeps 5 replicas.",
+            commands: [
+              "kubectl set image deployment/api nginx=nginx:1.26",
+              "kubectl rollout status deployment/api",
+              "kubectl rollout history deployment/api",
+              "kubectl scale deployment api --replicas=5",
+              "kubectl rollout undo deployment/api",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl set image deployment/api nginx=nginx:1.26",
@@ -203,6 +222,16 @@ export const cka: CertificationContent = {
           duration: 25,
           xp: 150,
           intro: "Drain a node for maintenance and dedicate another to GPU workloads.",
+          solution: {
+            explanation: "drain cordons the node and evicts its Pods (DaemonSet Pods need --ignore-daemonsets). After maintenance, uncordon it. The NoSchedule taint keeps regular Pods off worker-2.",
+            commands: [
+              "kubectl drain worker-1 --ignore-daemonsets",
+              "kubectl get pods -o wide",
+              "kubectl uncordon worker-1",
+              "kubectl label node worker-2 accelerator=nvidia",
+              "kubectl taint nodes worker-2 gpu=true:NoSchedule",
+            ],
+          },
           timeLimit: 30,
           hints: [
             "kubectl drain worker-1 --ignore-daemonsets",
@@ -228,6 +257,16 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Give a team a resource budget and see how it's enforced.",
+          solution: {
+            explanation: "Once a quota tracks requests, every Pod must declare them, so web first needs requests. Then the pods=6 limit caps the Deployment and the ReplicaSet reports FailedCreate events for the rest.",
+            commands: [
+              "kubectl create quota team-quota --hard=pods=6,requests.cpu=1,requests.memory=1Gi -n team-a",
+              "kubectl get events -n team-a",
+              "kubectl set resources deployment/web --requests=cpu=100m,memory=128Mi -n team-a",
+              "kubectl scale deployment web --replicas=8 -n team-a",
+              "kubectl describe quota team-quota -n team-a",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl create quota team-quota --hard=pods=6,requests.cpu=1,requests.memory=1Gi -n team-a",
@@ -313,6 +352,14 @@ export const cka: CertificationContent = {
           duration: 15,
           xp: 100,
           intro: "Expose an application outside the cluster.",
+          solution: {
+            explanation: "--port is the Service port and --target-port the container port. NodePort also opens a port in 30000-32767 on every node.",
+            commands: [
+              "kubectl expose deployment frontend --type=NodePort --name=frontend-svc --port=80 --target-port=8080 -n web",
+              "kubectl scale deployment frontend --replicas=3 -n web",
+              "kubectl describe svc frontend-svc -n web",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl expose deployment frontend --type=NodePort --name=frontend-svc --port=80 --target-port=8080 -n web",
@@ -321,11 +368,341 @@ export const cka: CertificationContent = {
           ],
           initialState: [
             { kind: "Namespace", name: "web" },
-            { kind: "Deployment", name: "frontend", namespace: "web", image: "nginx:1.27", replicas: 2, revisions: ["nginx:1.27"], labels: { app: "frontend" } },
+            { kind: "Deployment", name: "frontend", namespace: "web", image: "nginx:1.27", replicas: 2, revisions: ["nginx:1.27"], labels: { app: "frontend" }, listenPort: 8080 },
           ],
           checks: [
             { type: "exists", description: "frontend-svc is a NodePort on port 80 to 8080", kind: "Service", name: "frontend-svc", namespace: "web", match: { type: "NodePort", port: 80, targetPort: 8080, selector: { app: "frontend" } } },
             { type: "exists", description: "frontend runs 3 replicas", kind: "Deployment", name: "frontend", namespace: "web", match: { replicas: 3 } },
+          ],
+        },
+      ],
+    },
+    {
+      slug: "storage",
+      name: "Storage",
+      description: "PersistentVolumes, claims and StorageClasses (10% of exam)",
+      xp: 300,
+      lessons: [
+        { type: "reading", slug: "persistent-storage", title: "Persistent Storage", duration: 20, xp: 60 },
+        {
+          type: "quiz",
+          slug: "storage-quiz",
+          title: "Storage Quiz",
+          duration: 10,
+          xp: 75,
+          intro: "Test your knowledge of PVs, PVCs and StorageClasses.",
+          questions: [
+            {
+              question: "A PVC doesn't set storageClassName. Which class does it use?",
+              type: "multiple_choice",
+              options: [
+                "The cluster's default StorageClass",
+                "None: it only binds static PVs",
+                "The class of the first PV created",
+                "local-storage",
+              ],
+              answer: "The cluster's default StorageClass",
+              explanation: "Leaving storageClassName out means 'use the default class' (the one marked default in kubectl get sc). Setting it to an empty string means no class at all.",
+            },
+            {
+              question: "A bound PV has persistentVolumeReclaimPolicy: Retain. What happens when its claim is deleted?",
+              type: "multiple_choice",
+              options: [
+                "The PV becomes Released and keeps its data",
+                "The PV and its data are deleted",
+                "The claim can't be deleted",
+                "The PV immediately binds to another claim",
+              ],
+              answer: "The PV becomes Released and keeps its data",
+              explanation: "Retain keeps the volume for an administrator to clean up or reuse. Delete removes it with the claim.",
+            },
+            {
+              question: "What does volumeBindingMode: WaitForFirstConsumer do?",
+              type: "multiple_choice",
+              options: [
+                "Delays binding and provisioning until a Pod uses the claim",
+                "Waits until the claim is at least 1Gi",
+                "Waits for an admin to approve the claim",
+                "Prevents more than one Pod using the volume",
+              ],
+              answer: "Delays binding and provisioning until a Pod uses the claim",
+              explanation: "The volume is created where the Pod is scheduled. Until then the claim is Pending, which is expected.",
+            },
+            {
+              question: "You can change the storageClassName of a bound PVC with kubectl patch.",
+              type: "true_false",
+              options: ["True", "False"],
+              answer: "False",
+              explanation: "A PVC's spec is immutable except for the storage request (expansion). Recreate the claim to change its class.",
+            },
+            {
+              question: "Which must match for a PVC to bind to an existing PV? (Select all that apply)",
+              type: "multi_select",
+              options: ["storageClassName", "Enough capacity", "The requested access modes", "The PV's namespace"],
+              answer: ["storageClassName", "Enough capacity", "The requested access modes"],
+              explanation: "PVs are cluster-scoped, so they have no namespace. Class, capacity and access modes must all fit.",
+            },
+          ],
+        },
+        {
+          type: "lab",
+          slug: "static-pv-lab",
+          title: "Lab: Static PersistentVolume",
+          duration: 20,
+          xp: 150,
+          intro: "Create a PV, claim it and mount it in a Pod.",
+          solution: {
+            explanation: "The claim binds to data-pv because the class names match (no StorageClass object called manual is needed), 1Gi covers 500Mi and both use ReadWriteOnce. The Pod references the claim, never the PV.",
+            commands: ["kubectl apply -f storage.yaml", "kubectl get pv,pvc -n app", "kubectl get pods -n app"],
+            files: {
+              "storage.yaml": `apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: data-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+  namespace: app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual
+  resources:
+    requests:
+      storage: 500Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: writer
+  namespace: app
+spec:
+  containers:
+    - name: writer
+      image: busybox:1.36
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-pvc
+`,
+            },
+          },
+          timeLimit: 25,
+          hints: [
+            "Write a PersistentVolume, a PersistentVolumeClaim and a Pod in one file separated by ---",
+            "PV: capacity.storage 1Gi, accessModes [ReadWriteOnce], storageClassName manual, persistentVolumeReclaimPolicy Retain, hostPath.path /mnt/data",
+            "kubectl get pv,pvc -n app",
+          ],
+          initialState: [{ kind: "Namespace", name: "app" }],
+          checks: [
+            {
+              type: "exists",
+              description: "data-pv is 1Gi RWO, class manual, Retain, hostPath /mnt/data",
+              kind: "PersistentVolume",
+              name: "data-pv",
+              match: {
+                capacity: "1Gi",
+                accessModes: ["ReadWriteOnce"],
+                storageClassName: "manual",
+                reclaimPolicy: "Retain",
+                hostPath: "/mnt/data",
+              },
+            },
+            {
+              type: "exists",
+              description: "data-pvc requests 500Mi and is bound to data-pv",
+              kind: "PersistentVolumeClaim",
+              name: "data-pvc",
+              namespace: "app",
+              match: { request: "500Mi", volumeName: "data-pv" },
+            },
+            {
+              type: "exists",
+              description: "writer mounts data-pvc at /data",
+              kind: "Pod",
+              name: "writer",
+              namespace: "app",
+              match: { volumes: [{ claimName: "data-pvc", mountPath: "/data" }] },
+            },
+            { type: "pods", description: "writer is Running", namespace: "app", selector: {}, running: 1 },
+          ],
+        },
+        {
+          type: "lab",
+          slug: "fix-pending-pvc-lab",
+          title: "Lab: Database Stuck in Pending",
+          duration: 20,
+          xp: 150,
+          intro: "Find out why a claim never binds and fix it.",
+          solution: {
+            explanation: "The claim asks for StorageClass fast-ssd, which doesn't exist, so it stays Pending and the Pod can't be scheduled. The class is immutable: delete the claim and recreate it without storageClassName, so the default class (standard) provisions it once postgres uses it.",
+            commands: [
+              "kubectl get events -n db",
+              "kubectl get sc",
+              "kubectl delete pvc db-data -n db",
+              "kubectl apply -f db-data.yaml",
+              "kubectl get pvc,pods -n db",
+            ],
+            files: {
+              "db-data.yaml": `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-data
+  namespace: db
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+`,
+            },
+          },
+          timeLimit: 25,
+          hints: [
+            "kubectl get pvc,pods -n db",
+            "kubectl get events -n db",
+            "kubectl get sc",
+            "kubectl get pvc db-data -n db -o yaml > db-data.yaml",
+          ],
+          initialState: [
+            { kind: "Namespace", name: "db" },
+            {
+              kind: "PersistentVolumeClaim",
+              name: "db-data",
+              namespace: "db",
+              storageClassName: "fast-ssd",
+              accessModes: ["ReadWriteOnce"],
+              request: "2Gi",
+              volumeName: null,
+            },
+            {
+              kind: "Deployment",
+              name: "postgres",
+              namespace: "db",
+              image: "postgres:16",
+              replicas: 1,
+              revisions: ["postgres:16"],
+              labels: { app: "postgres" },
+              volumes: [{ name: "data", claimName: "db-data", mountPath: "/var/lib/postgresql/data" }],
+            },
+          ],
+          checks: [
+            {
+              type: "exists",
+              description: "db-data still requests 2Gi ReadWriteOnce",
+              kind: "PersistentVolumeClaim",
+              name: "db-data",
+              namespace: "db",
+              match: { request: "2Gi", accessModes: ["ReadWriteOnce"] },
+            },
+            {
+              type: "claim-volume",
+              description: "db-data is bound to a volume from the default class",
+              claim: "db-data",
+              namespace: "db",
+              match: { storageClassName: "standard" },
+            },
+            {
+              type: "pods",
+              description: "postgres is Running",
+              namespace: "db",
+              selector: { app: "postgres" },
+              running: 1,
+            },
+          ],
+        },
+        {
+          type: "lab",
+          slug: "expand-and-retain-lab",
+          title: "Lab: Grow a Volume and Keep Its Data",
+          duration: 20,
+          xp: 150,
+          intro: "Expand a claim in place and protect its volume from deletion.",
+          solution: {
+            explanation: "The expandable class allows volume expansion, so patching the claim's request grows the bound volume in place. The reclaim policy belongs to the PV, not the claim: look up the volume name and patch it to Retain.",
+            commands: [
+              "kubectl get pvc app-logs -n logs",
+              "kubectl patch pvc app-logs -n logs -p '{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"3Gi\"}}}}'",
+              "kubectl patch pv pvc-b1dd0182-d7f2-c50c-7c9a-6310cd3aa8d2 -p '{\"spec\":{\"persistentVolumeReclaimPolicy\":\"Retain\"}}'",
+              "kubectl get pv,pvc -n logs",
+            ],
+          },
+          timeLimit: 25,
+          hints: [
+            "kubectl get sc expandable",
+            "kubectl patch pvc app-logs -n logs -p '{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"3Gi\"}}}}'",
+            "kubectl get pvc app-logs -n logs (the VOLUME column names the PV)",
+            "kubectl patch pv <volume> -p '{\"spec\":{\"persistentVolumeReclaimPolicy\":\"Retain\"}}'",
+          ],
+          initialState: [
+            {
+              kind: "StorageClass",
+              name: "expandable",
+              provisioner: "rancher.io/local-path",
+              reclaimPolicy: "Delete",
+              volumeBindingMode: "Immediate",
+              allowVolumeExpansion: true,
+              isDefault: false,
+            },
+            { kind: "Namespace", name: "logs" },
+            {
+              kind: "PersistentVolumeClaim",
+              name: "app-logs",
+              namespace: "logs",
+              storageClassName: "expandable",
+              accessModes: ["ReadWriteOnce"],
+              request: "1Gi",
+              volumeName: null,
+            },
+            {
+              kind: "Deployment",
+              name: "collector",
+              namespace: "logs",
+              image: "busybox:1.36",
+              replicas: 1,
+              revisions: ["busybox:1.36"],
+              labels: { app: "collector" },
+              volumes: [{ name: "logs", claimName: "app-logs", mountPath: "/var/log/app" }],
+            },
+          ],
+          checks: [
+            {
+              type: "exists",
+              description: "app-logs requests 3Gi",
+              kind: "PersistentVolumeClaim",
+              name: "app-logs",
+              namespace: "logs",
+              match: { request: "3Gi" },
+            },
+            {
+              type: "claim-volume",
+              description: "The volume behind app-logs is 3Gi with reclaim policy Retain",
+              claim: "app-logs",
+              namespace: "logs",
+              match: { capacity: "3Gi", reclaimPolicy: "Retain" },
+            },
+            {
+              type: "pods",
+              description: "collector keeps running",
+              namespace: "logs",
+              selector: { app: "collector" },
+              running: 1,
+            },
           ],
         },
       ],
@@ -413,6 +790,15 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Diagnose and fix Pods the scheduler can't place.",
+          solution: {
+            explanation: "The FailedScheduling event lists why each node was rejected: worker-1 is still cordoned and worker-2 kept its maintenance taint. Remove both.",
+            commands: [
+              "kubectl get events",
+              "kubectl uncordon worker-1",
+              "kubectl taint nodes worker-2 maintenance-",
+              "kubectl get pods -o wide",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl get events",
@@ -439,6 +825,15 @@ export const cka: CertificationContent = {
           duration: 15,
           xp: 120,
           intro: "Find out why a Deployment's Pods never start.",
+          solution: {
+            explanation: "The events show the pull failing for nginx:1.277, a typo. Setting the intended nginx:1.27 image rolls out working Pods.",
+            commands: [
+              "kubectl get pods -n store",
+              "kubectl get events -n store",
+              "kubectl set image deployment/checkout nginx=nginx:1.27 -n store",
+              "kubectl get pods -n store",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl get pods -n store",
@@ -462,6 +857,15 @@ export const cka: CertificationContent = {
           duration: 15,
           xp: 120,
           intro: "Fix a Service that routes traffic to nothing.",
+          solution: {
+            explanation: "The Service selects app=carts but the Pods are labelled app=cart, so it has no endpoints. kubectl set selector fixes it without touching the Deployment or the ports.",
+            commands: [
+              "kubectl get endpoints cart -n shop",
+              "kubectl get pods -n shop --show-labels",
+              "kubectl set selector svc cart app=cart -n shop",
+              "kubectl get endpoints cart -n shop",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl get endpoints cart -n shop",
@@ -471,7 +875,7 @@ export const cka: CertificationContent = {
           ],
           initialState: [
             { kind: "Namespace", name: "shop" },
-            { kind: "Deployment", name: "cart", namespace: "shop", image: "nginx:1.27", replicas: 2, revisions: ["nginx:1.27"], labels: { app: "cart" } },
+            { kind: "Deployment", name: "cart", namespace: "shop", image: "nginx:1.27", replicas: 2, revisions: ["nginx:1.27"], labels: { app: "cart" }, listenPort: 8080 },
             { kind: "Service", name: "cart", namespace: "shop", type: "ClusterIP", port: 80, targetPort: 8080, nodePort: null, selector: { app: "carts" }, clusterIP: "10.96.40.12", labels: { app: "cart" } },
           ],
           checks: [
@@ -487,6 +891,17 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Repair RoleBindings without granting extra access.",
+          solution: {
+            explanation: "jane-read points at a Role called pod-reeder (typo), and ci-deploy binds the ci ServiceAccount from the default namespace instead of dev. roleRef can't be edited, so recreate both bindings.",
+            commands: [
+              "kubectl describe rolebinding -n dev",
+              "kubectl delete rolebinding jane-read -n dev",
+              "kubectl create rolebinding jane-read --role=pod-reader --user=jane -n dev",
+              "kubectl delete rolebinding ci-deploy -n dev",
+              "kubectl create rolebinding ci-deploy --role=pod-deployer --serviceaccount=dev:ci -n dev",
+              "kubectl auth can-i list pods --as=jane -n dev",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl auth can-i list pods --as=jane -n dev",
@@ -518,6 +933,14 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Get a crashing Deployment running by fixing its configuration.",
+          solution: {
+            explanation: "First the Pods can't start because the ConfigMap they import doesn't exist (CreateContainerConfigError). With only DB_HOST they start and exit (CrashLoopBackOff, see logs --previous). The ConfigMap needs both keys.",
+            commands: [
+              "kubectl get events -n shop",
+              "kubectl create configmap orders-config --from-literal=DB_HOST=postgres.data.svc.cluster.local --from-literal=DB_PORT=5432 -n shop",
+              "kubectl get pods -n shop",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl get pods -n shop",
@@ -541,6 +964,41 @@ export const cka: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Repair name resolution broken by an egress NetworkPolicy.",
+          solution: {
+            explanation: "worker-egress only allows port 80 to the api Pods, so DNS lookups to CoreDNS are dropped. Name lookups fail while the ClusterIP works. A second egress policy for DNS fixes it, and db stays blocked because policies only add allowances.",
+            commands: [
+              "kubectl apply -f allow-dns.yaml",
+              "kubectl exec worker -n prod -- wget -qO- -T 2 http://api",
+              "kubectl exec worker -n prod -- nc -zv -w 2 db 5432",
+            ],
+            files: {
+              "allow-dns.yaml": `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-allow-dns
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+`,
+            },
+          },
           timeLimit: 25,
           hints: [
             "kubectl exec worker -n prod -- wget -qO- -T 2 http://api",

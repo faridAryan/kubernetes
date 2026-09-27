@@ -88,6 +88,17 @@ export const cks: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Replace a wildcard Role with least-privilege access.",
+          solution: {
+            explanation: "Remove the wildcard grant entirely, then give reporter only read verbs on Pods. auth can-i confirms both sides.",
+            commands: [
+              "kubectl auth can-i delete secrets --as=system:serviceaccount:payments:reporter -n payments",
+              "kubectl delete rolebinding reporter-binding -n payments",
+              "kubectl delete role too-broad -n payments",
+              "kubectl create role pod-reader --verb=get,list,watch --resource=pods -n payments",
+              "kubectl create rolebinding reporter-read --role=pod-reader --serviceaccount=payments:reporter -n payments",
+              "kubectl auth can-i list pods --as=system:serviceaccount:payments:reporter -n payments",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl auth can-i delete secrets --as=system:serviceaccount:payments:reporter -n payments",
@@ -116,6 +127,15 @@ export const cks: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Fix a database exposed on every node and an anonymous RBAC grant.",
+          solution: {
+            explanation: "A Service type can't be switched away from NodePort cleanly with expose, so recreate it as ClusterIP. The anonymous RoleBinding is deleted outright.",
+            commands: [
+              "kubectl delete svc postgres -n data",
+              "kubectl expose deployment postgres --port=5432 --name=postgres -n data",
+              "kubectl delete rolebinding public-read -n data",
+              "kubectl auth can-i list secrets --as=system:anonymous -n data",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl get svc,rolebindings -n data",
@@ -146,6 +166,79 @@ export const cks: CertificationContent = {
           duration: 25,
           xp: 200,
           intro: "Lock down a three-tier app with NetworkPolicies.",
+          solution: {
+            explanation: "The empty podSelector with no ingress rules isolates every Pod in prod. The other three policies then each open exactly one path: anyone → frontend:80, frontend → api:80, api → db:5432.",
+            commands: [
+              "kubectl apply -f policies.yaml",
+              "kubectl exec outsider -- wget -qO- -T 2 http://api.prod",
+              "kubectl exec deploy/frontend -n prod -- curl -m 2 http://api",
+            ],
+            files: {
+              "policies.yaml": `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: prod
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-allow-all
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-frontend
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-allow-api
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api
+      ports:
+        - port: 5432
+`,
+            },
+          },
           timeLimit: 30,
           hints: [
             "kubectl exec outsider -- wget -qO- -T 2 http://api.prod",
@@ -239,6 +332,14 @@ export const cks: CertificationContent = {
           duration: 15,
           xp: 120,
           intro: "Apply Pod Security Admission levels with namespace labels.",
+          solution: {
+            explanation: "Pod Security Admission is configured purely with namespace labels: pod-security.kubernetes.io/<mode>=<level>.",
+            commands: [
+              "kubectl label namespace prod pod-security.kubernetes.io/enforce=restricted",
+              "kubectl label namespace sandbox pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/warn=restricted",
+              "kubectl get ns --show-labels",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl label namespace prod pod-security.kubernetes.io/enforce=restricted",
@@ -321,6 +422,15 @@ export const cks: CertificationContent = {
           duration: 20,
           xp: 150,
           intro: "Move a leaked password into a Secret and pin an image version.",
+          solution: {
+            explanation: "Store the rotated password in a Secret, recreate the ConfigMap without it (ConfigMaps can't drop keys through create), and pin an explicit image version instead of latest.",
+            commands: [
+              "kubectl create secret generic billing-db --from-literal=DB_PASSWORD=N3w-Pa55-2024 -n billing",
+              "kubectl delete configmap billing-config -n billing",
+              "kubectl create configmap billing-config --from-literal=DB_HOST=db -n billing",
+              "kubectl set image deployment/billing nginx=nginx:1.27.2 -n billing",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl create secret generic billing-db --from-literal=DB_PASSWORD=N3w-Pa55-2024 -n billing",

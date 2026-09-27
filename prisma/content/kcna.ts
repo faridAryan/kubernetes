@@ -83,6 +83,17 @@ export const kcna: CertificationContent = {
           duration: 15,
           xp: 100,
           intro: "In this lab you'll use kubectl to explore a running cluster and its components.",
+          solution: {
+            explanation: "kubectl get lists objects, describe shows details, and -A widens a query to every namespace. The control plane components (etcd, kube-apiserver, scheduler, controller-manager) run as Pods in kube-system.",
+            commands: [
+              "kubectl version",
+              "kubectl get nodes",
+              "kubectl get namespaces",
+              "kubectl get pods -A",
+              "kubectl cluster-info",
+              "kubectl describe node worker-1",
+            ],
+          },
           timeLimit: 30,
           hints: [
             "kubectl version",
@@ -168,6 +179,15 @@ export const kcna: CertificationContent = {
           duration: 15,
           xp: 100,
           intro: "Create a namespace and run your first Pod in it.",
+          solution: {
+            explanation: "Namespaces isolate names, so every command needs -n sandbox. kubectl run creates a single Pod, and labels can be added afterwards with kubectl label.",
+            commands: [
+              "kubectl create namespace sandbox",
+              "kubectl run web --image=nginx:1.27 -n sandbox",
+              "kubectl label pod web tier=frontend -n sandbox",
+              "kubectl get pods -n sandbox --show-labels",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl create namespace sandbox",
@@ -242,6 +262,15 @@ export const kcna: CertificationContent = {
           duration: 20,
           xp: 100,
           intro: "Run a replicated application behind a Service.",
+          solution: {
+            explanation: "create deployment labels its Pods app=hello, and expose builds a Service whose selector is that same label, so the Service follows the Pods as you scale.",
+            commands: [
+              "kubectl create deployment hello --image=nginx:1.27 --replicas=2",
+              "kubectl expose deployment hello --port=80",
+              "kubectl scale deployment hello --replicas=3",
+              "kubectl describe svc hello",
+            ],
+          },
           timeLimit: 25,
           hints: [
             "kubectl create deployment hello --image=nginx:1.27 --replicas=2",
@@ -262,6 +291,15 @@ export const kcna: CertificationContent = {
           duration: 15,
           xp: 100,
           intro: "Remove unused resources without breaking the ones still in use.",
+          solution: {
+            explanation: "Deleting a namespace removes everything inside it. The stray debug Pod lives in default, so it has to be deleted on its own, while the api Deployment stays untouched.",
+            commands: [
+              "kubectl get all -n old-team",
+              "kubectl delete namespace old-team",
+              "kubectl delete pod tmp-debug",
+              "kubectl get deployments",
+            ],
+          },
           timeLimit: 20,
           hints: [
             "kubectl get all -n old-team",

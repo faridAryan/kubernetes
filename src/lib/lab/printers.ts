@@ -1,9 +1,10 @@
 import { listPods, matchesSelector } from "./cluster";
-import { crashReason, isRunning, podStatus } from "./container";
-import { podEvents, podIp, serviceEndpoints } from "./diagnostics";
+import { crashReason, isReady, podStatus } from "./container";
+import { claimEvents, podEvents, podIp, serviceEndpoints } from "./diagnostics";
+import { boundCapacity, claimPhase, effectiveClassName } from "./storage";
 import { QUOTA_KEYS, quotaUsed } from "./quota";
 import { formatQuantity } from "./units";
-import type { ClusterState, ContainerConfig, Kind, Labels, NetworkPolicyRule, Resource } from "./types";
+import type { AccessMode, ClusterState, ContainerConfig, Kind, Labels, NetworkPolicyRule, Probe, Resource } from "./types";
 
 export const KIND_PREFIX: Record<Kind, string> = {
   Node: "node",
@@ -18,6 +19,9 @@ export const KIND_PREFIX: Record<Kind, string> = {
   RoleBinding: "rolebinding.rbac.authorization.k8s.io",
   NetworkPolicy: "networkpolicy.networking.k8s.io",
   ResourceQuota: "resourcequota",
+  StorageClass: "storageclass.storage.k8s.io",
+  PersistentVolume: "persistentvolume",
+  PersistentVolumeClaim: "persistentvolumeclaim",
 };
 
 export const KIND_PLURAL: Record<Kind, string> = {
@@ -33,7 +37,18 @@ export const KIND_PLURAL: Record<Kind, string> = {
   RoleBinding: "rolebindings.rbac.authorization.k8s.io",
   NetworkPolicy: "networkpolicies.networking.k8s.io",
   ResourceQuota: "resourcequotas",
+  StorageClass: "storageclasses.storage.k8s.io",
+  PersistentVolume: "persistentvolumes",
+  PersistentVolumeClaim: "persistentvolumeclaims",
 };
+
+const ACCESS_MODE_SHORT: Record<AccessMode, string> = {
+  ReadWriteOnce: "RWO",
+  ReadOnlyMany: "ROX",
+  ReadWriteMany: "RWX",
+  ReadWriteOncePod: "RWOP",
+};
+const shortModes = (modes: AccessMode[]) => modes.map((m) => ACCESS_MODE_SHORT[m]).join(",");
 
 export function table(rows: string[][]): string {
   const widths = rows[0].map((_, col) => Math.max(...rows.map((row) => row[col].length)));
@@ -70,14 +85,14 @@ function columns(state: ClusterState, r: Resource, wide: boolean): [string[], st
     case "Namespace":
       return [["NAME", "STATUS", "AGE"], [r.name, "Active", age(r.createdAt)]];
     case "Pod": {
-      const base = [r.name, isRunning(state, r) ? "1/1" : "0/1", podStatus(state, r), podStatus(state, r) === "CrashLoopBackOff" ? "5 (40s ago)" : "0", age(r.createdAt)];
+      const base = [r.name, isReady(state, r) ? "1/1" : "0/1", podStatus(state, r), podStatus(state, r) === "CrashLoopBackOff" ? "5 (40s ago)" : "0", age(r.createdAt)];
       return wide
         ? [["NAME", "READY", "STATUS", "RESTARTS", "AGE", "IP", "NODE"], [...base, podIp(r), r.node ?? "<none>"]]
         : [["NAME", "READY", "STATUS", "RESTARTS", "AGE"], base];
     }
     case "Deployment": {
       const running = listPods(state).filter(
-        (p) => p.namespace === r.namespace && p.owner === "ReplicaSet" && matchesSelector(p.labels, r.labels) && isRunning(state, p)
+        (p) => p.namespace === r.namespace && p.owner === "ReplicaSet" && matchesSelector(p.labels, r.labels) && isReady(state, p)
       ).length;
       return [
         ["NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"],
@@ -101,6 +116,21 @@ function columns(state: ClusterState, r: Resource, wide: boolean): [string[], st
       return [["NAME", "ROLE", "AGE"], [r.name, `Role/${r.role}`, age(r.createdAt)]];
     case "NetworkPolicy":
       return [["NAME", "POD-SELECTOR", "AGE"], [r.name, formatSelector(r.podSelector), age(r.createdAt)]];
+    case "StorageClass":
+      return [
+        ["NAME", "PROVISIONER", "RECLAIMPOLICY", "VOLUMEBINDINGMODE", "ALLOWVOLUMEEXPANSION", "AGE"],
+        [r.isDefault ? `${r.name} (default)` : r.name, r.provisioner, r.reclaimPolicy, r.volumeBindingMode, String(r.allowVolumeExpansion), age(r.createdAt)],
+      ];
+    case "PersistentVolume":
+      return [
+        ["NAME", "CAPACITY", "ACCESS MODES", "RECLAIM POLICY", "STATUS", "CLAIM", "STORAGECLASS", "AGE"],
+        [r.name, r.capacity, shortModes(r.accessModes), r.reclaimPolicy, r.phase, r.claimRef ?? "", r.storageClassName, age(r.createdAt)],
+      ];
+    case "PersistentVolumeClaim":
+      return [
+        ["NAME", "STATUS", "VOLUME", "CAPACITY", "ACCESS MODES", "STORAGECLASS", "AGE"],
+        [r.name, claimPhase(r), r.volumeName ?? "", boundCapacity(state, r), r.volumeName ? shortModes(r.accessModes) : "", effectiveClassName(state, r) || "<unset>", age(r.createdAt)],
+      ];
     case "ResourceQuota": {
       const used = quotaUsed(listPods(state), r);
       const pair = (key: string) => `${key}: ${formatQuantity(key, used[key] ?? 0)}/${r.hard[key]}`;
@@ -141,8 +171,20 @@ function formatRules(direction: "from" | "to", rules: NetworkPolicyRule[]): stri
   ]);
 }
 
+function formatProbe(probe: Probe): string {
+  const target = probe.httpGet ? `http-get http://:${probe.httpGet.port}${probe.httpGet.path}` : `tcp-socket :${probe.tcpSocket?.port}`;
+  return `${target} delay=${probe.initialDelaySeconds ?? 0}s period=${probe.periodSeconds ?? 10}s #failure=${probe.failureThreshold ?? 3}`;
+}
+
 function containerLines(config: ContainerConfig): [string, string][] {
   const lines: [string, string][] = [];
+  if (config.livenessProbe) lines.push(["Liveness", formatProbe(config.livenessProbe)]);
+  if (config.readinessProbe) lines.push(["Readiness", formatProbe(config.readinessProbe)]);
+  if (config.startupProbe) lines.push(["Startup", formatProbe(config.startupProbe)]);
+  if (config.volumes?.length) {
+    lines.push(["Mounts", config.volumes.map((v) => `${v.mountPath} from ${v.name}`).join(", ")]);
+    lines.push(["Volumes", config.volumes.map((v) => `${v.name} (PersistentVolumeClaim: ${v.claimName})`).join(", ")]);
+  }
   const { requests, limits } = config.resources ?? {};
   if (limits) lines.push(["Limits", Object.entries(limits).map(([k, v]) => `${k}=${v}`).join(", ")]);
   if (requests) lines.push(["Requests", Object.entries(requests).map(([k, v]) => `${k}=${v}`).join(", ")]);
@@ -190,7 +232,13 @@ export function describe(state: ClusterState, r: Resource): string {
       break;
     case "Pod": {
       const crash = podStatus(state, r) === "CrashLoopBackOff" ? crashReason(state, r) : null;
-      lines.push(["Node", r.node ?? "<none>"], ["Status", podStatus(state, r)], ["IP", podIp(r)], ["Image", r.image]);
+      lines.push(
+        ["Node", r.node ?? "<none>"],
+        ["Status", podStatus(state, r)],
+        ["Ready", String(isReady(state, r))],
+        ["IP", podIp(r)],
+        ["Image", r.image]
+      );
       if (crash) {
         lines.push(["Last State", `Terminated (Reason: ${crash.reason}, Exit Code: ${crash.exitCode})`], ["Restart Count", "5"]);
       }
@@ -234,6 +282,36 @@ export function describe(state: ClusterState, r: Resource): string {
       ]);
       lines.push(["Policy Types", r.policyTypes.join(", ")]);
       break;
+    case "StorageClass":
+      lines.push(
+        ["IsDefaultClass", r.isDefault ? "Yes" : "No"],
+        ["Provisioner", r.provisioner],
+        ["AllowVolumeExpansion", String(r.allowVolumeExpansion)],
+        ["ReclaimPolicy", r.reclaimPolicy],
+        ["VolumeBindingMode", r.volumeBindingMode]
+      );
+      break;
+    case "PersistentVolume":
+      lines.push(
+        ["StorageClass", r.storageClassName],
+        ["Status", r.phase],
+        ["Claim", r.claimRef ?? ""],
+        ["Reclaim Policy", r.reclaimPolicy],
+        ["Access Modes", shortModes(r.accessModes)],
+        ["Capacity", r.capacity],
+        ["Source", r.hostPath ? `HostPath (Path: ${r.hostPath})` : "dynamically provisioned (local-path)"]
+      );
+      break;
+    case "PersistentVolumeClaim":
+      lines.push(
+        ["StorageClass", effectiveClassName(state, r) || "<unset>"],
+        ["Status", claimPhase(r)],
+        ["Volume", r.volumeName ?? ""],
+        ["Capacity", boundCapacity(state, r)],
+        ["Access Modes", shortModes(r.accessModes)],
+        ["Requested", r.request]
+      );
+      break;
     case "ResourceQuota": {
       const used = quotaUsed(listPods(state), r);
       lines.push(
@@ -255,6 +333,10 @@ export function describe(state: ClusterState, r: Resource): string {
       ...(r.policyTypes.includes("Egress") ? ["Allowing egress traffic:", ...formatRules("to", r.egress)] : []),
     ];
     return `${body}\n${sections.join("\n")}`;
+  }
+  if (r.kind === "PersistentVolumeClaim") {
+    const events = claimEvents(state, r).map((e) => ["  " + e.type, e.reason, "5s", e.message]);
+    return events.length > 0 ? `${body}\nEvents:\n${table([["  Type", "Reason", "Age", "Message"], ...events])}` : `${body}\nEvents:          <none>`;
   }
   if (r.kind !== "Pod") return body;
 

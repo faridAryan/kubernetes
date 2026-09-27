@@ -1,29 +1,19 @@
-import { listPods, matchesSelector, podCandidates } from "./cluster";
-import { crashReason, isRunning, missingConfigMaps, podStatus } from "./container";
+import { listPods, matchesSelector, podCandidates, podIp } from "./cluster";
+
+export { podIp };
+import { readinessError } from "./app";
+import { crashReason, isReady, missingConfigMaps, podStatus } from "./container";
+import { pendingReason, volumeProblem } from "./storage";
+import type { PersistentVolumeClaimResource } from "./types";
 import { admitPods } from "./quota";
 import type { ClusterState, NodeResource, PodResource, ServiceResource } from "./types";
-
-const NODE_SUBNETS: Record<string, number> = { "control-plane": 0, "worker-1": 1, "worker-2": 2 };
-
-function numericHash(text: string): number {
-  let hash = 0;
-  for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return hash;
-}
-
-// Stable pod IP inside the node's pod CIDR (10.244.<node>.0/24)
-export function podIp(pod: PodResource): string {
-  if (pod.node === null) return "<none>";
-  const subnet = NODE_SUBNETS[pod.node] ?? 3;
-  return `10.244.${subnet}.${(numericHash(`${pod.namespace}/${pod.name}`) % 240) + 10}`;
-}
 
 // Ready pod IPs a Service routes to, formatted like the Endpoints object
 export function serviceEndpoints(state: ClusterState, service: ServiceResource): string[] {
   const hasSelector = Object.keys(service.selector).length > 0;
   return listPods(state)
     .filter(
-      (p) => hasSelector && p.namespace === service.namespace && isRunning(state, p) && matchesSelector(p.labels, service.selector)
+      (p) => hasSelector && p.namespace === service.namespace && isReady(state, p) && matchesSelector(p.labels, service.selector)
     )
     .map((p) => `${podIp(p)}:${service.targetPort}`);
 }
@@ -57,7 +47,11 @@ export interface PodEvent {
 export function podEvents(state: ClusterState, pod: PodResource): PodEvent[] {
   const status = podStatus(state, pod);
   if (status === "Pending") {
-    return [{ type: "Warning", reason: "FailedScheduling", message: schedulingFailure(state) }];
+    const volume = volumeProblem(state, pod);
+    const message = volume
+      ? `0/3 nodes are available: ${volume}. preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.`
+      : schedulingFailure(state);
+    return [{ type: "Warning", reason: "FailedScheduling", message }];
   }
 
   const scheduled: PodEvent = {
@@ -74,10 +68,17 @@ export function podEvents(state: ClusterState, pod: PodResource): PodEvent[] {
   }
   if (status === "CrashLoopBackOff") {
     const crash = crashReason(state, pod);
+    const probe = crash?.probe;
     return [
       scheduled,
       { type: "Normal", reason: "Pulled", message: `Container image "${pod.image}" already present on machine` },
       { type: "Normal", reason: "Started", message: "Started container app" },
+      ...(probe
+        ? [
+            { type: "Warning" as const, reason: "Unhealthy", message: `${probe.probe} probe failed: ${probe.message}` },
+            { type: "Normal" as const, reason: "Killing", message: `Container app failed ${probe.probe.toLowerCase()} probe, will be restarted` },
+          ]
+        : []),
       ...(crash?.reason === "OOMKilled"
         ? [{ type: "Warning" as const, reason: "OOMKilling", message: "Memory cgroup out of memory: Killed process 1 (app)" }]
         : []),
@@ -96,11 +97,20 @@ export function podEvents(state: ClusterState, pod: PodResource): PodEvent[] {
       { type: "Warning", reason: "BackOff", message: `Back-off pulling image "${pod.image}"` },
     ];
   }
+  const notReady = readinessError(pod, podIp(pod));
   return [
     scheduled,
     { type: "Normal", reason: "Pulled", message: `Container image "${pod.image}" already present on machine` },
     { type: "Normal", reason: "Started", message: "Started container" },
+    ...(notReady ? [{ type: "Warning" as const, reason: "Unhealthy", message: `Readiness probe failed: ${notReady}` }] : []),
   ];
+}
+
+// Events on a claim that can't bind yet
+export function claimEvents(state: ClusterState, claim: PersistentVolumeClaimResource): PodEvent[] {
+  const pending = pendingReason(state, claim);
+  if (pending === null) return [];
+  return [{ type: pending.reason === "ProvisioningFailed" ? "Warning" : "Normal", reason: pending.reason, message: pending.message }];
 }
 
 // Warnings shown by "kubectl get events": pods in trouble and pods a quota refused to create
@@ -108,7 +118,7 @@ export function warningEvents(state: ClusterState, namespace: string | null) {
   const inScope = (ns: string) => namespace === null || ns === namespace;
 
   const podWarnings = listPods(state)
-    .filter((p) => inScope(p.namespace) && isRunning(state, p) === false)
+    .filter((p) => inScope(p.namespace) && isReady(state, p) === false)
     .flatMap((pod) =>
       podEvents(state, pod)
         .filter((event) => event.type === "Warning")
@@ -129,5 +139,15 @@ export function warningEvents(state: ClusterState, namespace: string | null) {
       object: `replicaset/${r.replicaSet}`,
     }));
 
-  return [...podWarnings, ...quotaWarnings];
+  const claimWarnings = state.resources
+    .filter((r): r is PersistentVolumeClaimResource => r.kind === "PersistentVolumeClaim" && inScope(r.namespace))
+    .flatMap((claim) =>
+      claimEvents(state, claim).map((event) => ({
+        ...event,
+        namespace: claim.namespace,
+        object: `persistentvolumeclaim/${claim.name}`,
+      }))
+    );
+
+  return [...podWarnings, ...quotaWarnings, ...claimWarnings];
 }

@@ -28,14 +28,56 @@ export interface Resources {
   limits?: ResourceList;
 }
 
-// How the simulated container behaves; all optional so simple labs stay simple
+export interface Probe {
+  httpGet?: { path: string; port: number };
+  tcpSocket?: { port: number };
+  initialDelaySeconds?: number;
+  periodSeconds?: number;
+  failureThreshold?: number;
+}
+
+// A PersistentVolumeClaim mounted into the container
+export interface VolumeMount {
+  name: string;
+  claimName: string;
+  mountPath: string;
+}
+
+// Visible container spec (round-trips through YAML)...
 export interface ContainerConfig {
   env?: Record<string, string>;
   envFrom?: string[]; // ConfigMap names imported with envFrom
-  requiredEnv?: string[]; // the app exits (CrashLoopBackOff) unless these variables are set
   resources?: Resources;
+  readinessProbe?: Probe;
+  livenessProbe?: Probe;
+  startupProbe?: Probe;
+  volumes?: VolumeMount[];
+  // ...and hidden app behaviour that labs set and learners discover by debugging
+  requiredEnv?: string[]; // the app exits (CrashLoopBackOff) unless these variables are set
   memoryUsage?: string; // real memory the app needs; above the limit it gets OOMKilled
+  listenPort?: number; // port the app serves on (defaults by image)
+  httpPaths?: string[]; // paths that answer 200 (defaults by image)
+  startupSeconds?: number; // seconds before the app accepts connections
 }
+
+// Every ContainerConfig field: deployment pods copy all of them from the pod template
+export const CONTAINER_CONFIG_FIELDS = [
+  "env",
+  "envFrom",
+  "resources",
+  "readinessProbe",
+  "livenessProbe",
+  "startupProbe",
+  "volumes",
+  "requiredEnv",
+  "memoryUsage",
+  "listenPort",
+  "httpPaths",
+  "startupSeconds",
+] as const satisfies readonly (keyof ContainerConfig)[];
+
+// Fields that describe the app itself; kept when a Deployment is re-applied from YAML
+export const APP_BEHAVIOUR_FIELDS = ["requiredEnv", "memoryUsage", "listenPort", "httpPaths", "startupSeconds"] as const;
 
 export interface PodResource extends BaseResource, ContainerConfig {
   kind: "Pod";
@@ -122,6 +164,37 @@ export interface ResourceQuotaResource extends BaseResource {
   hard: Record<string, string>; // e.g. { pods: "6", "requests.memory": "2Gi" }
 }
 
+export type AccessMode = "ReadWriteOnce" | "ReadOnlyMany" | "ReadWriteMany" | "ReadWriteOncePod";
+
+export interface StorageClassResource extends BaseResource {
+  kind: "StorageClass";
+  provisioner: string; // "kubernetes.io/no-provisioner" = static PVs only
+  reclaimPolicy: "Delete" | "Retain";
+  volumeBindingMode: "Immediate" | "WaitForFirstConsumer";
+  allowVolumeExpansion: boolean;
+  isDefault: boolean;
+}
+
+export interface PersistentVolumeResource extends BaseResource {
+  kind: "PersistentVolume";
+  capacity: string;
+  accessModes: AccessMode[];
+  storageClassName: string;
+  reclaimPolicy: "Delete" | "Retain";
+  hostPath: string | null;
+  claimRef: string | null; // "namespace/name" of the bound claim
+  phase: "Available" | "Bound" | "Released";
+}
+
+export interface PersistentVolumeClaimResource extends BaseResource {
+  kind: "PersistentVolumeClaim";
+  namespace: string;
+  storageClassName: string | null; // null = cluster default class, "" = static binding only
+  accessModes: AccessMode[];
+  request: string;
+  volumeName: string | null; // set once bound
+}
+
 export type Resource =
   | NodeResource
   | NamespaceResource
@@ -134,11 +207,17 @@ export type Resource =
   | RoleResource
   | RoleBindingResource
   | NetworkPolicyResource
-  | ResourceQuotaResource;
+  | ResourceQuotaResource
+  | StorageClassResource
+  | PersistentVolumeResource
+  | PersistentVolumeClaimResource;
 
 export type Kind = Resource["kind"];
 
-export type NamespacedResource = Exclude<Resource, NodeResource | NamespaceResource>;
+export type NamespacedResource = Exclude<
+  Resource,
+  NodeResource | NamespaceResource | StorageClassResource | PersistentVolumeResource
+>;
 
 export interface ClusterState {
   resources: Resource[];
@@ -184,6 +263,7 @@ export type LabCheck =
       port: number;
       allowed: boolean;
     }
+  | { type: "claim-volume"; description: string; claim: string; namespace: string; match: Record<string, unknown> }
   | { type: "endpoints"; description: string; service: string; namespace: string; count: number }
   | {
       type: "pods";
@@ -192,6 +272,7 @@ export type LabCheck =
       selector: Labels;
       running: number;
       notOnNode?: string;
+      ready?: boolean; // also require readiness probes to pass
     };
 
 export interface CheckResult {

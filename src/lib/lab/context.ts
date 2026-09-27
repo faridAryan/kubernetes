@@ -16,6 +16,9 @@ export const KIND_ALIASES: Record<string, Kind> = {
   rolebinding: "RoleBinding", rolebindings: "RoleBinding",
   networkpolicy: "NetworkPolicy", networkpolicies: "NetworkPolicy", netpol: "NetworkPolicy",
   resourcequota: "ResourceQuota", resourcequotas: "ResourceQuota", quota: "ResourceQuota",
+  storageclass: "StorageClass", storageclasses: "StorageClass", sc: "StorageClass",
+  persistentvolume: "PersistentVolume", persistentvolumes: "PersistentVolume", pv: "PersistentVolume",
+  persistentvolumeclaim: "PersistentVolumeClaim", persistentvolumeclaims: "PersistentVolumeClaim", pvc: "PersistentVolumeClaim",
 };
 
 export interface Context {

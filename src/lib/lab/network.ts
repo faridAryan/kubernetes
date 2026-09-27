@@ -1,5 +1,6 @@
 import { findResource, listPods, matchesSelector } from "./cluster";
-import { isRunning } from "./container";
+import { appPort } from "./app";
+import { isReady, isRunning } from "./container";
 import { podIp } from "./diagnostics";
 import type { ClusterState, Labels, NetworkPolicyPeer, NetworkPolicyResource, PodResource, ServiceResource } from "./types";
 
@@ -73,7 +74,7 @@ export function findServiceByName(state: ClusterState, from: PodResource, host: 
 function endpointPods(state: ClusterState, service: ServiceResource): PodResource[] {
   const hasSelector = Object.keys(service.selector).length > 0;
   return listPods(state).filter(
-    (p) => hasSelector && p.namespace === service.namespace && isRunning(state, p) && matchesSelector(p.labels, service.selector)
+    (p) => hasSelector && p.namespace === service.namespace && isReady(state, p) && matchesSelector(p.labels, service.selector)
   );
 }
 
@@ -96,6 +97,10 @@ export function connect(state: ClusterState, from: PodResource, host: string, po
     const backends = endpointPods(state, service);
     // kube-proxy rejects traffic for ports the Service doesn't expose or when it has no endpoints
     if (port !== service.port || backends.length === 0) return { status: "refused", ip: service.clusterIP, target: null };
+    // Traffic goes to targetPort: if the app listens elsewhere, the connection is refused
+    if (backends.every((backend) => appPort(backend) !== service.targetPort)) {
+      return { status: "refused", ip: service.clusterIP, target: null };
+    }
     const reachable = backends.find((backend) => connectionAllowed(state, from, backend, service.targetPort));
     return reachable
       ? { status: "open", ip: service.clusterIP, target: reachable }
@@ -103,7 +108,7 @@ export function connect(state: ClusterState, from: PodResource, host: string, po
   }
 
   const target = pod as PodResource;
-  if (isRunning(state, target) === false) return { status: "refused", ip: podIp(target), target: null };
+  if (isRunning(state, target) === false || appPort(target) !== port) return { status: "refused", ip: podIp(target), target: null };
   return connectionAllowed(state, from, target, port)
     ? { status: "open", ip: podIp(target), target }
     : { status: "timeout", ip: podIp(target), target: null };

@@ -16,6 +16,7 @@ const metadata = z.object({
   name: z.string().regex(/^[a-z0-9]([-a-z0-9.]{0,61}[a-z0-9])?$/, "metadata.name must be a lowercase DNS name"),
   namespace: z.string().optional(),
   labels: labels.optional(),
+  annotations: z.record(z.string(), z.coerce.string()).optional(),
 });
 
 // Only matchLabels is simulated
@@ -26,17 +27,43 @@ const selector = z
 
 const resourceList = z.object({ cpu: quantity.optional(), memory: quantity.optional() }).optional();
 
+const port = z.union([z.number().int(), z.string()]).refine((p) => typeof p === "number", "named ports aren't supported in this lab, use numbers");
+
+const probe = z
+  .object({
+    httpGet: z.object({ path: z.string().default("/"), port }).optional(),
+    tcpSocket: z.object({ port }).optional(),
+    exec: z.unknown().optional(),
+    initialDelaySeconds: z.number().int().min(0).optional(),
+    periodSeconds: z.number().int().min(1).optional(),
+    failureThreshold: z.number().int().min(1).optional(),
+    timeoutSeconds: z.number().optional(),
+    successThreshold: z.number().optional(),
+  })
+  .refine((p) => p.exec === undefined, "exec probes aren't simulated in this lab, use httpGet or tcpSocket")
+  .refine((p) => p.httpGet !== undefined || p.tcpSocket !== undefined, "a probe needs httpGet or tcpSocket");
+
 const container = z.object({
   name: z.string(),
   image: z.string().min(1),
   env: z.array(z.object({ name: z.string(), value: z.coerce.string().optional() })).optional(),
   envFrom: z.array(z.object({ configMapRef: z.object({ name: z.string() }).optional() })).optional(),
   resources: z.object({ requests: resourceList, limits: resourceList }).optional(),
+  readinessProbe: probe.optional(),
+  livenessProbe: probe.optional(),
+  startupProbe: probe.optional(),
+  volumeMounts: z.array(z.object({ name: z.string(), mountPath: z.string() })).optional(),
 });
 
-const podSpec = z.object({ containers: z.array(container).min(1, "spec.containers must have at least one container") });
+const podSpec = z.object({
+  containers: z.array(container).min(1, "spec.containers must have at least one container"),
+  // Only PersistentVolumeClaim volumes are simulated; others are accepted and ignored
+  volumes: z
+    .array(z.object({ name: z.string(), persistentVolumeClaim: z.object({ claimName: z.string() }).optional() }).passthrough())
+    .optional(),
+});
 
-const port = z.union([z.number().int(), z.string()]).refine((p) => typeof p === "number", "named ports aren't supported in this lab, use numbers");
+const accessModes = z.array(z.enum(["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"])).min(1);
 
 const peer = z
   .object({ podSelector: selector.optional(), namespaceSelector: selector.optional(), ipBlock: z.unknown().optional() })
@@ -82,19 +109,70 @@ const manifests = {
     }),
   }),
   ResourceQuota: z.object({ metadata, spec: z.object({ hard: z.record(z.string(), quantity) }) }),
+  StorageClass: z.object({
+    metadata,
+    provisioner: z.string().min(1),
+    reclaimPolicy: z.enum(["Delete", "Retain"]).optional(),
+    volumeBindingMode: z.enum(["Immediate", "WaitForFirstConsumer"]).optional(),
+    allowVolumeExpansion: z.boolean().optional(),
+  }),
+  PersistentVolume: z.object({
+    metadata,
+    spec: z.object({
+      capacity: z.object({ storage: quantity }),
+      accessModes,
+      persistentVolumeReclaimPolicy: z.enum(["Delete", "Retain", "Recycle"]).optional(),
+      storageClassName: z.string().optional(),
+      hostPath: z.object({ path: z.string() }).optional(),
+    }),
+  }),
+  PersistentVolumeClaim: z.object({
+    metadata,
+    spec: z.object({
+      accessModes,
+      resources: z.object({ requests: z.object({ storage: quantity }) }),
+      storageClassName: z.string().nullable().optional(),
+    }),
+  }),
 };
 
+const CLUSTER_SCOPED_KINDS = ["Namespace", "StorageClass", "PersistentVolume"];
+
 type ManifestKind = keyof typeof manifests;
+
+function probeConfig(p: z.infer<typeof probe> | undefined) {
+  if (p === undefined) return undefined;
+  return JSON.parse(
+    JSON.stringify({
+      httpGet: p.httpGet ? { path: p.httpGet.path, port: p.httpGet.port } : undefined,
+      tcpSocket: p.tcpSocket ? { port: p.tcpSocket.port } : undefined,
+      initialDelaySeconds: p.initialDelaySeconds,
+      periodSeconds: p.periodSeconds,
+      failureThreshold: p.failureThreshold,
+    })
+  );
+}
 
 function containerConfig(spec: z.infer<typeof podSpec>): { image: string } & ContainerConfig {
   const [first] = spec.containers;
   const env = Object.fromEntries((first.env ?? []).map((e) => [e.name, e.value ?? ""]));
   const envFrom = (first.envFrom ?? []).flatMap((e) => (e.configMapRef ? [e.configMapRef.name] : []));
+  const claims = new Map((spec.volumes ?? []).flatMap((v) => (v.persistentVolumeClaim ? [[v.name, v.persistentVolumeClaim.claimName]] : [])));
+  const volumes = (first.volumeMounts ?? []).flatMap((m) => {
+    const claimName = claims.get(m.name);
+    return claimName ? [{ name: m.name, claimName, mountPath: m.mountPath }] : [];
+  });
+  const resources = first.resources ? JSON.parse(JSON.stringify(first.resources)) : undefined;
+
   return {
     image: first.image,
     ...(Object.keys(env).length > 0 ? { env } : {}),
     ...(envFrom.length > 0 ? { envFrom } : {}),
-    ...(first.resources ? { resources: JSON.parse(JSON.stringify(first.resources)) } : {}),
+    ...(resources && Object.keys(resources).length > 0 ? { resources } : {}),
+    ...(first.readinessProbe ? { readinessProbe: probeConfig(first.readinessProbe) } : {}),
+    ...(first.livenessProbe ? { livenessProbe: probeConfig(first.livenessProbe) } : {}),
+    ...(first.startupProbe ? { startupProbe: probeConfig(first.startupProbe) } : {}),
+    ...(volumes.length > 0 ? { volumes } : {}),
   };
 }
 
@@ -114,9 +192,13 @@ function rules(raw: Record<string, unknown>[] | undefined, direction: "from" | "
 }
 
 // A resource minus the fields the cluster fills in (createdAt, clusterIP, node...)
-export type ParsedResource =
-  | { kind: "Namespace"; name: string; labels: Labels }
-  | { kind: Exclude<ManifestKind, "Namespace">; name: string; namespace: string; labels: Labels; fields: Record<string, unknown> };
+export interface ParsedResource {
+  kind: ManifestKind;
+  name: string;
+  namespace: string | undefined; // undefined for cluster-scoped kinds
+  labels: Labels;
+  fields: Record<string, unknown>;
+}
 
 function toResource(kind: ManifestKind, doc: unknown, defaultNamespace: string): ParsedResource {
   const parsed = manifests[kind].safeParse(doc);
@@ -126,11 +208,53 @@ function toResource(kind: ManifestKind, doc: unknown, defaultNamespace: string):
   }
   const data = parsed.data as { metadata: z.infer<typeof metadata>; spec?: Record<string, unknown> } & Record<string, unknown>;
   const { name, namespace = defaultNamespace, labels: metaLabels = {} } = data.metadata;
-
-  if (kind === "Namespace") return { kind, name, labels: metaLabels };
-  const base = { kind, name, namespace, labels: metaLabels };
+  const clusterScoped = CLUSTER_SCOPED_KINDS.includes(kind);
+  const base = { kind, name, namespace: clusterScoped ? undefined : namespace, labels: metaLabels };
 
   switch (kind) {
+    case "Namespace":
+      return { ...base, fields: {} };
+    case "StorageClass": {
+      const sc = data as unknown as z.infer<typeof manifests.StorageClass>;
+      return {
+        ...base,
+        fields: {
+          provisioner: sc.provisioner,
+          reclaimPolicy: sc.reclaimPolicy ?? "Delete",
+          volumeBindingMode: sc.volumeBindingMode ?? "Immediate",
+          allowVolumeExpansion: sc.allowVolumeExpansion ?? false,
+          isDefault: sc.metadata.annotations?.["storageclass.kubernetes.io/is-default-class"] === "true",
+        },
+      };
+    }
+    case "PersistentVolume": {
+      const spec = data.spec as z.infer<typeof manifests.PersistentVolume>["spec"];
+      if (spec.persistentVolumeReclaimPolicy === "Recycle") {
+        throw new KubectlError("error: the Recycle reclaim policy is deprecated; use Retain or Delete");
+      }
+      return {
+        ...base,
+        fields: {
+          capacity: spec.capacity.storage,
+          accessModes: spec.accessModes,
+          // Manually created PVs default to Retain
+          reclaimPolicy: spec.persistentVolumeReclaimPolicy ?? "Retain",
+          storageClassName: spec.storageClassName ?? "",
+          hostPath: spec.hostPath?.path ?? null,
+        },
+      };
+    }
+    case "PersistentVolumeClaim": {
+      const spec = data.spec as z.infer<typeof manifests.PersistentVolumeClaim>["spec"];
+      return {
+        ...base,
+        fields: {
+          accessModes: spec.accessModes,
+          request: spec.resources.requests.storage,
+          storageClassName: spec.storageClassName ?? null,
+        },
+      };
+    }
     case "ConfigMap":
       return { ...base, fields: { data: data.data ?? {} } };
     case "Secret": {
@@ -180,20 +304,9 @@ function toResource(kind: ManifestKind, doc: unknown, defaultNamespace: string):
   }
 }
 
-// Parses a (multi-document) YAML file into resources the simulator understands
-export function parseManifests(text: string, file: string, defaultNamespace: string): ParsedResource[] {
-  const documents = parseAllDocuments(text);
-  const list = Array.isArray(documents) ? documents : [documents];
-
-  return list
-    .map((doc) => {
-      if (doc.errors.length > 0) {
-        throw new KubectlError(`error: error parsing ${file}: ${doc.errors[0].message.split("\n")[0]}`);
-      }
-      return doc.toJS() as unknown;
-    })
-    .filter((doc): doc is Record<string, unknown> => doc !== null && typeof doc === "object")
-    .map((doc) => {
+// Converts already-parsed objects (from YAML or a patch) into simulator resources
+export function parseObjects(objects: Record<string, unknown>[], file: string, defaultNamespace: string): ParsedResource[] {
+  return objects.map((doc) => {
       const kind = doc.kind as string;
       if (typeof doc.apiVersion !== "string") throw new KubectlError(`error: error validating "${file}": apiVersion not set`);
       if (kind in manifests === false) {
@@ -201,6 +314,23 @@ export function parseManifests(text: string, file: string, defaultNamespace: str
       }
       return toResource(kind as ManifestKind, doc, defaultNamespace);
     });
+}
+
+// Parses a (multi-document) YAML file into resources the simulator understands
+export function parseManifests(text: string, file: string, defaultNamespace: string): ParsedResource[] {
+  const documents = parseAllDocuments(text);
+  const list = Array.isArray(documents) ? documents : [documents];
+
+  const objects = list
+    .map((doc) => {
+      if (doc.errors.length > 0) {
+        throw new KubectlError(`error: error parsing ${file}: ${doc.errors[0].message.split("\n")[0]}`);
+      }
+      return doc.toJS() as unknown;
+    })
+    .filter((doc): doc is Record<string, unknown> => doc !== null && typeof doc === "object");
+
+  return parseObjects(objects, file, defaultNamespace);
 }
 
 export type { Resource };

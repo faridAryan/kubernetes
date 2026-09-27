@@ -36,6 +36,8 @@ const VALUE_FLAGS = new Set([
   "--limits",
   "--hard",
   "--env",
+  "--patch",
+  "--type",
 ]);
 
 export interface ParsedArgs {

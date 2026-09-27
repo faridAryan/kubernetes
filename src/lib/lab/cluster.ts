@@ -1,6 +1,8 @@
 import { admitPods } from "./quota";
+import { CONTAINER_CONFIG_FIELDS } from "./types";
 import type {
   ClusterState,
+  ContainerConfig,
   DeploymentResource,
   Kind,
   Labels,
@@ -10,12 +12,12 @@ import type {
   ResourceSeed,
 } from "./types";
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 const K8S_VERSION = "v1.30.2";
 
-export const CLUSTER_SCOPED: Kind[] = ["Node", "Namespace"];
+export const CLUSTER_SCOPED: Kind[] = ["Node", "Namespace", "StorageClass", "PersistentVolume"];
 
-function baseResources(createdAt: number): Resource[] {
+export function baseResources(createdAt: number): Resource[] {
   const node = (name: string, roles: string): NodeResource => ({
     kind: "Node",
     name,
@@ -66,6 +68,17 @@ function baseResources(createdAt: number): Resource[] {
       createdAt,
     },
     {
+      kind: "StorageClass",
+      name: "standard",
+      provisioner: "rancher.io/local-path",
+      reclaimPolicy: "Delete",
+      volumeBindingMode: "WaitForFirstConsumer",
+      allowVolumeExpansion: false,
+      isDefault: true,
+      labels: {},
+      createdAt,
+    },
+    {
       kind: "Service",
       name: "kube-dns",
       namespace: "kube-system",
@@ -84,22 +97,6 @@ function baseResources(createdAt: number): Resource[] {
 // Kubernetes labels every namespace with its own name, which namespaceSelectors rely on
 export function namespaceLabels(name: string, labels: Labels = {}): Labels {
   return { ...labels, "kubernetes.io/metadata.name": name };
-}
-
-const resourceKey = (r: Resource) => `${r.kind}/${"namespace" in r ? r.namespace : ""}/${r.name}`;
-
-// Base 3-node cluster plus the resources a lab starts with.
-// A seed with the same kind/namespace/name replaces the base resource (e.g. a cordoned node).
-export function createInitialState(seeds: ResourceSeed[]): ClusterState {
-  const createdAt = Date.now() - 5 * DAY_MS;
-  const extra = seeds.map((seed) => {
-    const resource = { labels: {}, ...seed, createdAt } as Resource;
-    if (resource.kind === "Namespace") resource.labels = namespaceLabels(resource.name, resource.labels);
-    return resource;
-  });
-  const overridden = new Set(extra.map(resourceKey));
-  const base = baseResources(createdAt).filter((r) => overridden.has(resourceKey(r)) === false);
-  return { resources: [...base, ...extra], nextId: 1 };
 }
 
 export function findResource<K extends Kind>(
@@ -143,8 +140,11 @@ function shortHash(text: string, length: number): string {
 // reschedule automatically after drains and change name when the image changes
 function deploymentPods(state: ClusterState, deployment: DeploymentResource): PodResource[] {
   const nodes = schedulableNodes(state);
-  const { env, envFrom, requiredEnv, resources, memoryUsage } = deployment;
-  const seed = `${deployment.name}:${deployment.image}:${JSON.stringify([env, envFrom, resources])}`;
+  const config = Object.fromEntries(
+    CONTAINER_CONFIG_FIELDS.filter((key) => deployment[key] !== undefined).map((key) => [key, deployment[key]])
+  ) as ContainerConfig;
+  // Any template change (image, env, probes, volumes...) creates a new ReplicaSet hash, like a real rollout
+  const seed = `${deployment.name}:${deployment.image}:${JSON.stringify(config)}`;
   const template = `${shortHash(seed, 5)}${shortHash(`${seed}#`, 5)}`;
 
   return Array.from({ length: deployment.replicas }, (_, i) => ({
@@ -156,11 +156,7 @@ function deploymentPods(state: ClusterState, deployment: DeploymentResource): Po
     owner: "ReplicaSet",
     labels: { ...deployment.labels },
     createdAt: deployment.createdAt,
-    env,
-    envFrom,
-    requiredEnv,
-    resources,
-    memoryUsage,
+    ...config,
   }));
 }
 
@@ -176,4 +172,19 @@ export function podCandidates(state: ClusterState): PodResource[] {
 // Pods that actually exist: deployment pods over a ResourceQuota are never created
 export function listPods(state: ClusterState): PodResource[] {
   return admitPods(state, podCandidates(state)).admitted;
+}
+
+const NODE_SUBNETS: Record<string, number> = { "control-plane": 0, "worker-1": 1, "worker-2": 2 };
+
+function numericHash(text: string): number {
+  let hash = 0;
+  for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return hash;
+}
+
+// Stable pod IP inside the node's pod CIDR (10.244.<node>.0/24)
+export function podIp(pod: PodResource): string {
+  if (pod.node === null) return "<none>";
+  const subnet = NODE_SUBNETS[pod.node] ?? 3;
+  return `10.244.${subnet}.${(numericHash(`${pod.namespace}/${pod.name}`) % 240) + 10}`;
 }

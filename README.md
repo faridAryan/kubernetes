@@ -2,14 +2,17 @@
 
 A gamified platform for learning Kubernetes and preparing for the KCNA, CKA, CKAD and CKS certifications.
 
-- **4 learning paths, 61 lessons**: readings, quizzes and 27 hands-on labs, including troubleshooting, NetworkPolicy and quota scenarios
+- **4 learning paths, 71 lessons**: readings, quizzes and 32 hands-on labs, including troubleshooting, NetworkPolicy, quota, health-probe and storage scenarios
 - **Hands-on labs**: a simulated 3-node cluster runs on the server. `kubectl` commands change its state and validation checks the result, so only real solutions pass. The simulator covers:
   - scheduling, taints and drains
   - image pull errors, CrashLoopBackOff (missing env or ConfigMap) and OOMKilled
   - ResourceQuota admission
+  - liveness, readiness and startup probes (restarts, unready Pods, missing endpoints)
+  - StorageClasses, PersistentVolumes and claims (static and dynamic binding, WaitForFirstConsumer, reclaim policies, expansion)
   - RBAC
   - NetworkPolicies, including DNS egress, tested with `kubectl exec -- curl/wget/nc/nslookup`
-  - YAML manifests written in an in-lab editor and applied with `kubectl apply -f`
+  - YAML manifests written in an in-lab editor and applied with `kubectl apply -f`, exported with `get -o yaml > file`, generated with `--dry-run=client -o yaml`, or changed with `kubectl patch`
+- **Worked solutions**: after two failed validations (or when time runs out) a lab's solution can be revealed. Finishing after viewing it earns half the XP.
 - **Timed mock exams** drawn from each path's question bank
 - **Spaced-repetition review** of questions you answered wrong
 - **XP, levels, streaks, badges, leaderboard and verifiable certificates**
@@ -96,12 +99,15 @@ Lab checks can require:
 | `command` | a matching command was run |
 | `exists` | a resource exists with the given fields (`match`) and without forbidden values (`exclude`) |
 | `absent` | a resource is gone |
-| `pods` | enough Pods matching a selector are Running (optionally not on a given node) |
+| `pods` | enough Pods matching a selector are Running (optionally Ready, or not on a given node) |
 | `endpoints` | a Service has at least N ready endpoints |
 | `connectivity` | a client Pod can (or can't) open a connection to `host:port` through Services, DNS and NetworkPolicies |
 | `can-i` | an RBAC question (`kubectl auth can-i`) has the expected answer |
+| `claim-volume` | the PersistentVolume bound to a claim has the given fields (works for dynamically named PVs) |
 
-Lab resources can describe container behaviour: `envFrom`, `env`, `requiredEnv` (the app crashes without these variables), `resources` and `memoryUsage` (above the limit it gets OOMKilled).
+Every lab also has a `solution` (explanation, commands and optional files). It's shown to learners after failed attempts, and the content test runs it to prove each lab is solvable.
+
+Lab resources can describe container behaviour: `envFrom`, `env`, `requiredEnv` (the app crashes without these variables), `resources` and `memoryUsage` (above the limit it gets OOMKilled), plus `listenPort`, `httpPaths` and `startupSeconds`, which probes and connections are checked against.
 
 Troubleshooting labs start from a broken `initialState`. A seed with the same kind and name as a base resource (for example, a cordoned `worker-1` Node) replaces it.
 

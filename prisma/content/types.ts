@@ -28,6 +28,8 @@ export type LessonContent =
       hints: string[];
       initialState?: ResourceSeed[];
       checks: LabCheck[];
+      // Revealed after failed attempts; also used by the content test to prove every lab is solvable
+      solution: { explanation: string; commands: string[]; files?: Record<string, string> };
     });
 
 export interface ModuleContent {

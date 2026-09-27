@@ -1,5 +1,5 @@
 import { CLUSTER_SCOPED, findResource, listPods, matchesSelector } from "./cluster";
-import { isRunning } from "./container";
+import { isReady, isRunning } from "./container";
 import { connect } from "./network";
 import { serviceEndpoints } from "./diagnostics";
 import { canI, subjectFromAs } from "./rbac";
@@ -11,7 +11,12 @@ function matchesFields(actual: Record<string, unknown>, expected: Record<string,
     const have = actual[key];
     if (Array.isArray(have)) {
       const wanted = Array.isArray(want) ? want : [want];
-      return wanted.every((value) => have.includes(value));
+      // Objects in arrays (e.g. volumes) match when some element contains all their fields
+      return wanted.every((value) =>
+        value !== null && typeof value === "object"
+          ? have.some((item) => item !== null && typeof item === "object" && matchesFields(item as Record<string, unknown>, value as Record<string, unknown>))
+          : have.includes(value)
+      );
     }
     if (want !== null && typeof want === "object" && have !== null && typeof have === "object") {
       return matchesFields(have as Record<string, unknown>, want as Record<string, unknown>);
@@ -51,6 +56,12 @@ function evaluate(check: LabCheck, state: ClusterState, commands: string[]): boo
       const namespace = CLUSTER_SCOPED.includes(check.kind) ? undefined : check.namespace ?? "default";
       return findResource(state, check.kind, check.name, namespace) === undefined;
     }
+    case "claim-volume": {
+      // The PV behind a claim, whatever name dynamic provisioning gave it
+      const claim = findResource(state, "PersistentVolumeClaim", check.claim, check.namespace);
+      const volume = claim?.volumeName ? findResource(state, "PersistentVolume", claim.volumeName) : undefined;
+      return volume !== undefined && matchesFields(volume as unknown as Record<string, unknown>, check.match);
+    }
     case "endpoints": {
       const service = findResource(state, "Service", check.service, check.namespace);
       return service !== undefined && serviceEndpoints(state, service).length >= check.count;
@@ -69,7 +80,7 @@ function evaluate(check: LabCheck, state: ClusterState, commands: string[]): boo
       const pods = listPods(state).filter(
         (p) => p.namespace === check.namespace && matchesSelector(p.labels, check.selector)
       );
-      const running = pods.filter((p) => isRunning(state, p) && p.node !== check.notOnNode);
+      const running = pods.filter((p) => (check.ready ? isReady(state, p) : isRunning(state, p)) && p.node !== check.notOnNode);
       return running.length >= check.running && running.length === pods.length;
     }
   }

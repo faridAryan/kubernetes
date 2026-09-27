@@ -6,7 +6,10 @@ import {
   namespaceLabels,
   schedulableNodes,
 } from "./cluster";
-import { applyFile, deleteFile } from "./apply";
+import { applyFile, deleteFile, patchCommand } from "./apply";
+import { assertKnownFormat, isObjectFormat, renderObjects } from "./output";
+import { stableStringify } from "./stable";
+import { reconcileStorage } from "./storage";
 import { crashReason, podStatus } from "./container";
 import { admissionError } from "./quota";
 import { createQuota, execCommand, setEnv, setResources } from "./workload-commands";
@@ -71,6 +74,7 @@ function get(ctx: Context): string {
   const allNamespaces = hasFlag(parsed, "--all-namespaces");
   const selector = parseLabels(getFlag(parsed, "--selector") ?? "");
   const output = getFlag(parsed, "--output");
+  assertKnownFormat(output);
   const options = {
     wide: output === "wide",
     showLabels: hasFlag(parsed, "--show-labels"),
@@ -114,9 +118,11 @@ function get(ctx: Context): string {
   if (wanted.length > 0) {
     const missing = wanted.find((name) => items.every((r) => r.name !== name));
     if (missing) throw notFound(kind, missing);
-    return printTable(state, items.filter((r) => wanted.includes(r.name)), options);
+    const selected = items.filter((r) => wanted.includes(r.name));
+    return isObjectFormat(output) ? renderObjects(state, selected, output, wanted.length === 1) : printTable(state, selected, options);
   }
 
+  if (isObjectFormat(output)) return renderObjects(state, items, output, false);
   if (items.length === 0) {
     const isNamespaced = CLUSTER_SCOPED.includes(kind) === false && allNamespaces === false;
     return isNamespaced ? `No resources found in ${ctx.namespace} namespace.` : "No resources found";
@@ -608,7 +614,30 @@ const HANDLERS: Record<string, (ctx: Context) => string> = {
   config,
   exec: execCommand,
   apply: (ctx) => applyFile(ctx, "apply"),
+  patch: patchCommand,
 };
+
+// Commands whose "-o yaml" / "--dry-run" output is the object they create or change
+const MUTATING = new Set(["run", "create", "expose", "apply", "patch", "set", "scale", "label"]);
+
+const resourceKey = (r: Resource) => `${r.kind}/${"namespace" in r ? r.namespace : ""}/${r.name}`;
+
+// Resources that a command created or modified, in the order they appear
+function changedResources(before: ClusterState, after: ClusterState): Resource[] {
+  const previous = new Map(before.resources.map((r) => [resourceKey(r), stableStringify(r)]));
+  return after.resources.filter((r) => previous.get(resourceKey(r)) !== stableStringify(r));
+}
+
+// "cmd > file.yaml": run the command and store its output in the lab's virtual filesystem
+function splitRedirect(tokens: string[]): { tokens: string[]; file: string | null } {
+  const index = tokens.indexOf(">");
+  if (index === -1) return { tokens, file: null };
+  const file = tokens[index + 1];
+  if (file === undefined || /^[\w.-]{1,64}$/.test(file) === false) {
+    throw new KubectlError("bash: syntax error: expected a file name like manifest.yaml after >");
+  }
+  return { tokens: [...tokens.slice(0, index), ...tokens.slice(index + 2)], file };
+}
 
 // Tiny shell so "ls" / "cat" work on files saved from the manifest editor
 function shellBuiltin(state: ClusterState, program: string, args: string[]): ExecResult | null {
@@ -636,7 +665,23 @@ function shellBuiltin(state: ClusterState, program: string, args: string[]): Exe
 
 // Runs one kubectl command against a copy of the state; the original is untouched on error
 export function executeCommand(input: ClusterState, command: string): ExecResult {
-  const tokens = tokenize(command);
+  let redirect: { tokens: string[]; file: string | null };
+  try {
+    redirect = splitRedirect(tokenize(command));
+  } catch (error) {
+    if (error instanceof KubectlError) return { output: error.message, isError: true, state: input };
+    throw error;
+  }
+
+  const result = runTokens(input, redirect.tokens);
+  if (redirect.file === null || result.isError) return result;
+
+  // Output goes to the file instead of the terminal
+  const files = { ...(result.state.files ?? {}), [redirect.file]: `${result.output}\n` };
+  return { output: "", isError: false, state: { ...result.state, files } };
+}
+
+function runTokens(input: ClusterState, tokens: string[]): ExecResult {
   // Everything after "--" belongs to the container (kubectl exec pod -- wget ...)
   const separator = tokens.indexOf("--");
   const [program, ...rest] = separator === -1 ? tokens : tokens.slice(0, separator);
@@ -653,8 +698,10 @@ export function executeCommand(input: ClusterState, command: string): ExecResult
     };
   }
 
-  const parsed = parseArgs(rest);
-  const [verb, ...args] = parsed.args;
+  // "-p" means --patch for kubectl patch and --previous for kubectl logs
+  const args = rest[0] === "patch" ? rest.map((arg) => (arg === "-p" ? "--patch" : arg)) : rest;
+  const parsed = parseArgs(args);
+  const [verb, ...handlerArgs] = parsed.args;
   const handler = verb ? HANDLERS[verb] : undefined;
 
   if (handler === undefined) {
@@ -670,7 +717,21 @@ export function executeCommand(input: ClusterState, command: string): ExecResult
   const state = structuredClone(input);
   try {
     const namespace = getFlag(parsed, "--namespace") ?? "default";
-    return { output: handler({ state, args, parsed, namespace, containerArgs }), isError: false, state };
+    const message = handler({ state, args: handlerArgs, parsed, namespace, containerArgs });
+    reconcileStorage(state);
+
+    const dryRun = getFlag(parsed, "--dry-run");
+    const isDryRun = dryRun !== undefined && dryRun !== "none" && dryRun !== "false";
+    const output = getFlag(parsed, "--output");
+
+    if (MUTATING.has(verb) && isObjectFormat(output)) {
+      const rendered = renderObjects(state, changedResources(input, state), output, true);
+      return { output: rendered, isError: false, state: isDryRun ? input : state };
+    }
+    if (isDryRun) {
+      return { output: message.split("\n").map((line) => `${line} (dry run)`).join("\n"), isError: false, state: input };
+    }
+    return { output: message, isError: false, state };
   } catch (error) {
     if (error instanceof KubectlError) return { output: error.message, isError: true, state: input };
     throw error;

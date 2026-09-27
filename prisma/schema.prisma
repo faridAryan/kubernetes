@@ -202,6 +202,7 @@ model LabConfig {
   initialState Json // simulated cluster state the lab starts from
   checks       Json // LabCheck[] evaluated against the final state
   hints        Json // string[]
+  solution     Json   @default("{}") // { explanation, commands[], files{} } revealed after failed attempts
   timeLimit    Int    @default(30) // minutes
 
   lesson      Lesson       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
@@ -214,7 +215,9 @@ model LabSession {
   labConfigId String
   status      LabSessionStatus @default(active)
   state       Json // live simulated cluster state
-  commands    String[]
+  commands          String[]
+  failedValidations Int              @default(0)
+  solutionViewed    Boolean          @default(false) // viewing the solution halves the lab's XP
   startedAt   DateTime         @default(now())
   expiresAt   DateTime
   completedAt DateTime?

@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { FileCode2, Play, Save } from "lucide-react";
 
 interface Props {
   files: Record<string, string>;
   disabled: boolean;
   onSave: (name: string, content: string, apply: boolean) => void;
+  // Set by the parent to load a file (e.g. from the solution); id changes on every request
+  openRequest?: { name: string; content: string; id: number };
 }
 
 const STARTER = `apiVersion: networking.k8s.io/v1
@@ -21,9 +23,17 @@ spec:
 `;
 
 // A small YAML editor standing in for vim: files are saved into the lab session
-export default function ManifestEditor({ files, disabled, onSave }: Props) {
+export default function ManifestEditor({ files, disabled, onSave, openRequest }: Props) {
   const [name, setName] = useState("manifest.yaml");
   const [content, setContent] = useState(STARTER);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (openRequest === undefined) return;
+    setName(openRequest.name);
+    setContent(openRequest.content);
+    setOpen(true);
+  }, [openRequest]);
   const validName = /^[\w.-]{1,64}$/.test(name);
 
   // Tab inserts two spaces instead of leaving the textarea
@@ -36,13 +46,17 @@ export default function ManifestEditor({ files, disabled, onSave }: Props) {
     requestAnimationFrame(() => e.currentTarget?.setSelectionRange(selectionStart + 2, selectionStart + 2));
   };
 
-  const open = (file: string) => {
+  const openFile = (file: string) => {
     setName(file);
     setContent(files[file]);
   };
 
   return (
-    <details className="glass-card overflow-hidden">
+    <details
+      className="glass-card overflow-hidden"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
       <summary className="p-4 cursor-pointer text-sm text-kube-400 hover:text-kube-300 transition flex items-center gap-2">
         <FileCode2 size={16} />
         Manifest editor (write YAML, then kubectl apply -f)
@@ -52,7 +66,7 @@ export default function ManifestEditor({ files, disabled, onSave }: Props) {
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="text-kube-500">Saved files:</span>
             {Object.keys(files).sort().map((file) => (
-              <button key={file} onClick={() => open(file)} className="px-2 py-1 rounded bg-kube-800 text-kube-300 hover:text-white font-mono">
+              <button key={file} onClick={() => openFile(file)} className="px-2 py-1 rounded bg-kube-800 text-kube-300 hover:text-white font-mono">
                 {file}
               </button>
             ))}
